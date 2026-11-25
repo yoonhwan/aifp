@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Feature Pack — use your AI agents from your phone</title>
+<style>
+:root{--bg:#f6f5f1;--card:#fff;--ink:#1b1a18;--sub:#615e57;--line:#e1ded5;--acc:#0b6e5f;--accbg:#e4f3ef;--warn:#b4451f;--code:#f1efe9;--term:#14161a;--termink:#d7dbe0;--ok:#1f7a4d}
+@media (prefers-color-scheme:dark){:root{--bg:#151614;--card:#1e1f1c;--ink:#ecebe6;--sub:#a6a39a;--line:#33342f;--acc:#5fd3bd;--accbg:#17302b;--warn:#ff8a5c;--code:#262722;--term:#0c0d10;--termink:#d7dbe0;--ok:#5fd39a}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.75 -apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Malgun Gothic","Noto Sans KR",sans-serif;word-break:keep-all;overflow-wrap:anywhere}
+main{max-width:880px;margin:0 auto;padding:36px 20px 80px}
+h1{font-size:32px;line-height:1.3;margin:0 0 12px;letter-spacing:-.02em}
+h2{font-size:22px;margin:52px 0 12px;padding-top:10px;border-top:2px solid var(--ink);letter-spacing:-.01em}
+h3{font-size:17px;margin:26px 0 8px}
+p{margin:8px 0}
+ul,ol{padding-left:22px;margin:8px 0}
+li{margin:6px 0}
+a{color:var(--acc)}
+code{font:14px ui-monospace,SFMono-Regular,Menlo,Consolas,"D2Coding",monospace;background:var(--code);padding:1px 6px;border-radius:5px}
+.sub{color:var(--sub)}
+.small{font-size:14px;color:var(--sub)}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:18px 0 0;padding:0;list-style:none}
+.toc a{display:block;padding:6px 13px;border:1px solid var(--line);border-radius:999px;background:var(--card);color:var(--ink);text-decoration:none;font-size:14px}
+.toc a:focus-visible,.copy:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin:14px 0}
+.eli{background:var(--accbg);border-color:transparent}
+.eli b{color:var(--acc)}
+/* picture: phone → one network → seats inside the computer (CSS only) */
+.pic{display:grid;grid-template-columns:150px 1fr 1.6fr;gap:14px;align-items:center;margin:18px 0}
+.phone{border:3px solid var(--ink);border-radius:22px;padding:12px 8px 16px;background:var(--term);color:var(--termink);font:11px/1.5 ui-monospace,Menlo,Consolas,monospace;min-height:190px}
+.phone .bar{height:5px;width:44px;background:#555;border-radius:3px;margin:0 auto 8px}
+.phone .hl{background:#234;border-radius:3px;color:#fff}
+.phone .w{color:#ffcf6b}.phone .b{color:#7fd1ff}.phone .i{color:#8a9099}
+.wire{text-align:center;font-size:13px;color:var(--sub)}
+.wire .ln{height:2px;background:repeating-linear-gradient(90deg,var(--acc) 0 8px,transparent 8px 14px);margin:8px 0}
+.pc{border:2px solid var(--ink);border-radius:12px;padding:12px;background:var(--card)}
+.pc .tt{font-size:13px;color:var(--sub);margin-bottom:8px}
+.seats{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.seat{border:1px solid var(--line);border-radius:9px;padding:7px 9px;font-size:13px;background:var(--bg)}
+.seat i{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;background:#8a9099}
+.seat.w i{background:#e0a100}.seat.b i{background:#2f8fd8}
+.cap{font-size:13px;color:var(--sub);text-align:center;margin-top:-6px}
+.steps{counter-reset:s;list-style:none;padding:0;display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px}
+.steps li{counter-increment:s;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin:0}
+.steps li::before{content:counter(s);display:inline-flex;width:24px;height:24px;border-radius:50%;background:var(--acc);color:#fff;align-items:center;justify-content:center;font-size:13px;font-weight:700;margin-right:8px}
+.steps b{display:inline}
+.steps span{display:block;font-size:14px;color:var(--sub);margin-top:6px}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.tool h3{margin-top:0;font-size:20px}
+.tool .tag{display:inline-block;font-size:12px;font-weight:700;color:var(--acc);background:var(--accbg);padding:2px 9px;border-radius:999px;margin-bottom:6px}
+.term{background:var(--term);color:var(--termink);border-radius:12px;padding:14px 16px;font:13px/1.6 ui-monospace,SFMono-Regular,Menlo,Consolas,"D2Coding",monospace;overflow-x:auto;white-space:pre;margin:10px 0}
+.term .k{color:#6fe0d0}.term .d{color:#8a9099}.term .w{color:#ffcf6b}.term .b{color:#7fd1ff}.term .s{background:#263445;color:#fff}
+.tw{overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:var(--card);margin:10px 0}
+table{border-collapse:collapse;width:100%;font-size:15px}
+th,td{padding:9px 12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+thead th{background:var(--code);font-weight:600}
+tbody tr:last-child td{border-bottom:0}
+td:first-child{white-space:nowrap}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(245px,1fr));gap:10px}
+.pk{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+.pk b{display:block}
+.pk span{font-size:14px;color:var(--sub)}
+.codewrap{position:relative;margin:10px 0}
+.codewrap .term{padding-top:44px;white-space:pre-wrap;word-break:break-all}
+.copy{position:absolute;top:8px;right:8px;font:inherit;font-size:13px;padding:5px 12px;border-radius:8px;border:1px solid #3a3f47;background:#22262c;color:#e6e8eb;cursor:pointer}
+.copy.done{color:#5fd39a;border-color:#5fd39a}
+.sec li b{color:var(--acc)}
+.sec .zero{font-size:26px;font-weight:800;color:var(--ok)}
+footer{margin-top:52px;border-top:1px solid var(--line);padding-top:14px;font-size:13px;color:var(--sub)}
+@media (max-width:640px){h1{font-size:26px}main{padding:24px 14px 60px}.pic{grid-template-columns:1fr}.phone{max-width:190px;margin:0 auto}.two{grid-template-columns:1fr}.wire .ln{background:none;height:0;margin:0}}
+.langs{font-size:.9rem;color:var(--sub)}
+</style>
+</head>
+<body>
+<main>
+
+<header>
+<p class="langs"><a href="index.html">English</a> · <a href="ko.html">한국어</a> · <a href="https://github.com/yoonhwan/aifp/blob/main/README.ja.md">日本語 (README)</a> · <a href="https://github.com/yoonhwan/aifp/blob/main/README.zh-CN.md">简体中文 (README)</a></p>
+<h1>Use your AI agents from your phone</h1>
+<p class="sub">AI Feature Pack is a set of tools for people who work with coding agents. Install only the packs you need. This guide starts with one of them: how to handle the agents on your home computer from your phone while you are out.</p>
+<ul class="toc" aria-label="Contents">
+<li><a href="#eli5">At a glance</a></li>
+<li><a href="#remote">Working remotely</a></li>
+<li><a href="#tools">tmuxc · tmm</a></li>
+<li><a href="#team">fable-team</a></li>
+<li><a href="#packs">Other packs</a></li>
+<li><a href="#install">Install</a></li>
+<li><a href="#security">Security check</a></li>
+</ul>
+</header>
+
+<h2 id="eli5">At a glance</h2>
+<div class="card eli">
+<p><b>A simple picture</b> — your home computer is an office and the AI agents are the staff working in it. Each one has a desk of its own (a terminal session).</p>
+<p>Your phone is the <b>window and intercom</b> into that office. The staff keep working while you are out; on the phone you see who is waiting for you, say a word, and put it back in your pocket.</p>
+</div>
+
+<div class="pic" role="img" aria-label="A phone reaching four agent sessions on a home computer over one network">
+<div class="phone" aria-hidden="true">
+<div class="bar"></div>
+<div class="i">seat&gt;</div>
+<div class="hl">▶ <span class="w">waiting</span> pay-fix</div>
+<div>&nbsp; <span class="b">working</span> docs</div>
+<div>&nbsp; <span class="b">working</span> tests</div>
+<div>&nbsp; <span class="i">idle</span> research</div>
+<div class="i">──────────</div>
+<div>Approve and</div>
+<div>I will deploy.</div>
+</div>
+<div class="wire" aria-hidden="true">Phone<div class="ln"></div>one network + SSH<div class="ln"></div>Home computer</div>
+<div class="pc" aria-hidden="true">
+<div class="tt">Home computer · sessions that stay alive after the terminal closes</div>
+<div class="seats">
+<div class="seat w"><i></i>pay-fix · waiting for an answer</div>
+<div class="seat b"><i></i>docs · working</div>
+<div class="seat b"><i></i>tests · working</div>
+<div class="seat"><i></i>research · idle</div>
+</div>
+</div>
+</div>
+<p class="cap">On the phone, whoever is waiting comes first, and the last message of the selected session shows below.</p>
+
+<h2 id="remote">Working remotely — in short</h2>
+<ol class="steps">
+<li><b>Put the devices on one network</b><span>Install Tailscale on the phone and the computer and both sit on the same private network. No router settings to touch.</span></li>
+<li><b>Connect over SSH from the phone</b><span>Use an SSH app such as Termius to log in to the computer. Key authentication is recommended.</span></li>
+<li><b>tmux keeps the sessions</b><span>Start your agents inside tmux sessions and they stay alive when the terminal closes or the phone connection drops.</span></li>
+<li><b>Just attach again</b><span>No need to resume a conversation. Attach to the live session and the screen is exactly where you left it.</span></li>
+</ol>
+<p class="small">That is the foundation. With many sessions, though, typing names on a phone to find one gets tiring. The two tools below take care of that.</p>
+
+<h2 id="tools">tmuxc · tmm — the two to start with</h2>
+<p>This is the easiest pair in the collection, so it comes first. <b>Open sessions with tmuxc; pick them on the phone with tmm.</b></p>
+
+<div class="two">
+<div class="card tool">
+<span class="tag">On the computer · opens sessions</span>
+<h3>tmuxc</h3>
+<p>Opens an agent session in a project folder or git worktree with one line. Claude Code · Codex CLI · OMX · OpenCode · Command Code · Pi all use the same command.</p>
+<ul>
+<li>Open, list and clean up sessions</li>
+<li>Read recent output without attaching</li>
+<li>Send a message to a session and confirm it arrived</li>
+<li>Save before shutdown, restore after reboot</li>
+<li>Fork a conversation into another session</li>
+</ul>
+</div>
+<div class="card tool">
+<span class="tag">On the phone · picks sessions</span>
+<h3>tmm</h3>
+<p>A TUI for picking among dozens of sessions (“seats”) on one screen with a cursor. No typing session names on a phone keyboard.</p>
+<ul>
+<li>Pick a seat with the cursor and a few letters of search</li>
+<li>Preview without attaching (auto-refresh)</li>
+<li>Send a message to the selected seat</li>
+<li>Seats waiting for you go to the top</li>
+<li>Sort by most recent reply</li>
+</ul>
+</div>
+</div>
+
+<h3>tmuxc — everyday commands</h3>
+<div class="term" tabindex="0" aria-label="tmuxc commands"><span class="d"># open an agent session in a project folder</span>
+tmuxc open ~/work/my-app --name my-app --agent claude
+
+<span class="d"># list open sessions</span>
+tmuxc list
+
+<span class="d"># read the last 40 lines without attaching</span>
+tmuxc ask my-app 40
+
+<span class="d"># send a line to a session</span>
+tmuxc send my-app "Run the tests and tell me only the result"
+
+<span class="d"># save everything before shutdown → restore after reboot</span>
+tmuxc save
+tmuxc restore --go</div>
+
+<h3>tmm — what you see on the phone</h3>
+<div class="term" tabindex="0" aria-label="tmm screen"><span class="d">──────────────────────────────────────── tmm ──</span>
+ <span class="d">move</span> <span class="k">⏎</span> attach  <span class="k">^S</span> message  <span class="k">^F</span> fork  <span class="k">^X</span> quit
+ <span class="d">sort</span> <span class="k">^T</span> recent  <span class="k">^W</span> waiting  <span class="k">^G</span> group  <span class="k">^H</span> only
+seat&gt; pay                                  1/24
+<span class="d">───────────────────────────────────────────────</span>
+<span class="s">▶ app   ● pay-fix     <span class="w">HUMAN</span> 12:33  2m  my-app  </span>
+  app   ● tests       <span class="b">BUSY </span> 12:52  6m  my-app
+  docs  ● guide       <span class="b">BUSY </span> 12:50  8m  docs
+  study ● notes-fix   <span class="d">IDLE </span> 12:21 37m  notes
+<span class="d">──────────────────── preview ───────────────────</span>
+⏺ Pushed 3 changes. OK to deploy?</div>
+<p class="small">The screen above is an illustration. <code>HUMAN</code> means the seat is waiting for your answer, <code>BUSY</code> means working, and <code>IDLE</code> means idle.</p>
+
+<div class="tw">
+<table>
+<thead><tr><th scope="col">Key</th><th scope="col">What it does</th></tr></thead>
+<tbody>
+<tr><td>↑↓ · type letters</td><td>Move the cursor · filter seats with a few letters</td></tr>
+<tr><td><code>Enter</code></td><td>Attach to that seat. Detach and you are back at the picker</td></tr>
+<tr><td><code>^S</code></td><td>Send a message without attaching, then confirm it arrived</td></tr>
+<tr><td><code>^W</code> · <code>^H</code></td><td>Waiting seats first · show waiting seats only</td></tr>
+<tr><td><code>^T</code> · <code>^G</code></td><td>Most recent first · group by category</td></tr>
+<tr><td><code>^P</code> · <code>^O</code> · <code>^U</code></td><td>Preview on/off · size · auto-refresh interval</td></tr>
+<tr><td><code>^D</code></td><td>Show ended sessions — for bringing them back after a reboot</td></tr>
+</tbody>
+</table>
+</div>
+<p class="small">tmm was built for sessions opened with tmuxc, but it works on ordinary tmux sessions as well.</p>
+
+<h2 id="team">fable-team — the idea only</h2>
+<div class="card">
+<p>A harness for running <b>several agents as a team</b> rather than one. The details are in the repository docs; this is only the outline of the idea.</p>
+<ul>
+<li><b>Roles are split.</b> The one that breaks work down and hands it out, the one that plans, the one that builds and the one that reviews are separate sessions.</li>
+<li><b>A piece of work is one file.</b> What to do and when it counts as done are written down, so the work continues when the session changes.</li>
+<li><b>Sessions pass notes to each other.</b> Sending is not the end; arrival is confirmed.</li>
+<li><b>Decisions that belong to a person go to the person.</b> Deleting and anything irreversible is not done without approval.</li>
+</ul>
+<p class="small">Best looked at after tmuxc and tmm feel familiar.</p>
+</div>
+
+<h2 id="packs">Other packs — in short</h2>
+<p class="small">Packs are independent. Pick only what you need from the catalog in the repository.</p>
+<div class="grid">
+<div class="pk"><b>agent-browser</b><span>Web automation — scraping · screenshots · form filling</span></div>
+<div class="pk"><b>agent-cli</b><span>Install, compare and delegate to coding agent CLIs</span></div>
+<div class="pk"><b>baton</b><span>Handoff between agents · worktree standard</span></div>
+<div class="pk"><b>cairn</b><span>Recovery ledger for schedules and session history</span></div>
+<div class="pk"><b>auto</b><span>Experiment loop that runs itself from baseline to goal</span></div>
+<div class="pk"><b>headroom</b><span>Compression proxy that trims agent context</span></div>
+<div class="pk"><b>ctx-burn</b><span>Auditor that measures where context leaks</span></div>
+<div class="pk"><b>ctx-plan</b><span>Planner that counts sessions and subscriptions</span></div>
+<div class="pk"><b>termaid</b><span>Mermaid diagrams drawn in the terminal</span></div>
+<div class="pk"><b>nanoclaw</b><span>Multi-agent platform — isolated execution</span></div>
+<div class="pk"><b>obsidian-cli</b><span>Read and write an Obsidian vault from the command line</span></div>
+<div class="pk"><b>notebooklm</b><span>Source-grounded Q&amp;A · research</span></div>
+<div class="pk"><b>yt-transcribe</b><span>Turn YouTube videos into text and summaries</span></div>
+<div class="pk"><b>tts-say</b><span>Text to speech — unified TTS</span></div>
+<div class="pk"><b>imsg</b><span>Read and send iMessage · SMS (macOS)</span></div>
+</div>
+
+<h2 id="install">Install</h2>
+<p>Repository: <a href="https://github.com/yoonhwan/aifp">github.com/yoonhwan/aifp</a></p>
+<p>To install tmuxc and tmm in one line, paste this into a terminal.</p>
+<div class="codewrap"><button type="button" class="copy" data-copy="inst">Copy</button><div class="term" id="inst">git clone https://github.com/yoonhwan/aifp.git &amp;&amp; cd aifp &amp;&amp; bash feature-pack/tmuxc/install.sh &amp;&amp; bash feature-pack/tmm/install.sh</div></div>
+<ul class="small">
+<li>Requires macOS · bash 4+ · git · tmux · fzf (for tmm).</li>
+<li>You can also leave it to your agent. After cloning, say “Read <code>feature-pack/tmm/INSTALL.md</code> and install it.”</li>
+<li>Other packs work the same way. Start from <code>README.md</code> and <code>INSTALL.md</code> in the pack folder.</li>
+</ul>
+
+<h2 id="security">Security check</h2>
+<div class="card sec">
+<p>This repository is an exported copy of a private working repository. Every export scans all files against 58 patterns (keys · tokens · addresses · identifiers) and goes out only when nothing is left outside a reviewed allowlist.</p>
+<p><span class="zero">0 found</span> — no usable keys, tokens, passwords or private keys.</p>
+<ul>
+<li><b>Key-shaped strings</b> exist, but all are fake test values or placeholders in install docs.</li>
+<li><b>Internal records and identifiers</b> were removed. Internal operation notes are not in the copy, and personal and organization identifiers were replaced with placeholders.</li>
+<li><b>Limits of the check</b>: this is a pattern search, not a dedicated secret scanner.</li>
+</ul>
+<p class="small">When you install, do not write your own keys or tokens into files inside the repository folder.</p>
+</div>
+
+<footer>AI Feature Pack guide · screens and names are illustrations.</footer>
+</main>
+<script>
+(function(){
+  function fallback(text){
+    var ta=document.createElement('textarea');ta.value=text;ta.setAttribute('readonly','');
+    ta.style.position='fixed';ta.style.top='-1000px';document.body.appendChild(ta);ta.select();
+    var ok=false;try{ok=document.execCommand('copy');}catch(e){}
+    document.body.removeChild(ta);return ok;
+  }
+  [].slice.call(document.querySelectorAll('.copy')).forEach(function(btn){
+    var label=btn.textContent;
+    btn.addEventListener('click',function(){
+      var text=document.getElementById(btn.getAttribute('data-copy')).textContent;
+      function done(ok){
+        btn.textContent=ok?'Copied':'Copy failed — select and copy manually';btn.classList.toggle('done',ok);
+        setTimeout(function(){btn.textContent=label;btn.classList.remove('done');},1800);
+      }
+      if(navigator.clipboard&&window.isSecureContext){navigator.clipboard.writeText(text).then(function(){done(true);},function(){done(fallback(text));});}
+      else{done(fallback(text));}
+    });
+  });
+})();
+</script>
+</body>
+</html>

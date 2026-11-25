@@ -1,161 +1,142 @@
-# 🏞️ AI Feature Pack
+<div align="center">
 
-**OpenClaw 에이전트를 위한 피처별 선택 설치 패키지**
+# AI Feature Pack
 
-> **처음 오셨다면 3줄만**
-> 1. 이 리포는 AI 코딩 에이전트(OpenClaw · Claude Code · Codex · Pi)에 기능을 하나씩 얹는 «피처 팩» 모음입니다. 팩 하나 = 폴더 하나이고 서로 독립입니다.
-> 2. 아래 카탈로그에서 필요한 팩을 고르고, 그 폴더의 `INSTALL.md` 를 에이전트에게 읽혀 설치합니다.
-> 3. 설치 방법 세 가지와 추천 순서는 «🚀 설치 방법» · «📋 추천 설치 순서» 절에 있습니다.
+**Feature packs you install one at a time into your AI coding agent setup**
+Claude Code · Codex · Pi · OpenCode · OpenClaw
 
----
+[English](README.md) · [한국어](README.ko.md) · [日本語](README.ja.md) · [简体中文](README.zh-CN.md)
 
-## 📦 피처 카탈로그
+[![Packs](https://img.shields.io/badge/packs-26-0b6e5f)](#-catalog)
+[![Guide](https://img.shields.io/badge/guide-GitHub%20Pages-0b6e5f)](https://yoonhwan.github.io/aifp/)
+[![Platform](https://img.shields.io/badge/platform-macOS-555)](#-notes)
 
-| # | Feature Pack | 설명 | 설치시간 | API 키 | 인증 |
-|---|-------------|------|---------|--------|------|
-| 1 | [agent-browser](feature-pack/agent-browser/) | 웹 자동화 — 스크래핑, 스크린샷, 폼 입력, 녹화 | ~3분 | ❌ | ❌ |
-| 2 | [imsg](feature-pack/imsg/) | iMessage/SMS — 대화 조회, 메시지 전송, 실시간 감시 | ~3분 | ❌ | ❌ |
-| 3 | [notebooklm](feature-pack/notebooklm/) | Google NotebookLM — 소스 기반 Q&A, 리서치, 오디오 생성 | ~5분 | ❌ | Google |
-| 4 | [obsidian-cli](feature-pack/obsidian-cli/) | Obsidian 볼트 CLI — 노트 조회/생성/검색/이동 | ~3분 | ❌ | ❌ |
-| 5 | [tts-say](feature-pack/tts-say/) | 통합 TTS — macOS say + ElevenLabs 음성 합성 | ~3분 | ElevenLabs | ❌ |
-| 6 | [yt-transcribe](feature-pack/yt-transcribe/) | YouTube → STT → 요약 자동 파이프라인 | ~10분 | ❌ | ❌ |
-| 7 | [termaid](feature-pack/termaid/) | Mermaid 다이어그램 터미널 렌더링 — 설계 시각화 자동 발동 | ~2분 | ❌ | ❌ |
-| 8 | [baton](feature-pack/baton/) | 멀티 에이전트 handoff/worktree/archive 표준 — Claude Code·Codex·Gemini 간 작업 인계 | ~2분 | ❌ | ❌ |
-| 9 | [cairn](feature-pack/cairn/) | 일정 + 멀티 에이전트 복구 원장 — milestone/task/session lineage, baton/tmuxc 연동 | ~2분 | ❌ | ❌ |
-| 10 | [tmuxc](feature-pack/tmuxc/) | tmux 기반 Claude Code·Codex·OMX 세션 launcher/control — verified send/capture 통신 표준 포함 | ~1분 | ❌ | ❌ |
-| 11 | [auto](feature-pack/auto/) | AutoResearch 자율 실험 루프 — 베이스라인→목표→자율주행 최적화 | ~1분 | ❌ | ❌ |
-| 12 | [nanoclaw](feature-pack/nanoclaw/) | **AI 멀티 에이전트 플랫폼** — OpenClaw 대체. Claude SDK Brain, Docker 격리, 멀티 크루 | ~15분 | ❌ | Slack |
-| 13 | [agent-cli](feature-pack/agent-cli/) | **AI 코딩 에이전트 CLI 툴킷** — 설치·비교 + 비대화 위임(DA/designer/architect 페르소나·자율주행·resume): claude·codex·gemini·opencode·cursor | ~3분 | ❌ | ❌ |
-| 14 | [headroom](feature-pack/headroom/) | Claude Code·Codex 등 AI 코딩 에이전트 컨텍스트 압축 프록시 + `/headroom` 토글 | ~5분 | ❌ | ❌ |
-| 15 | [fable-team](feature-pack/fable-team/ft2/) | **팀 오케스트레이션 하네스 (ft 2.0)** — 좌석·쪽지·발주 공통 코어, 계약 정의, Codex·Pi·Slack 어댑터, 진단 도구. 폴더별 책임은 `ft2/README.md` | — | ❌ | ❌ |
-| 16 | [tmm](feature-pack/tmm/) | **모바일(SSH) tmux 좌석 TUI** — 폰에서 수십 개 에이전트 세션을 커서로 고르고 미리보기·최근 응답순·대기좌석 우선·메시지 전송 (fzf) | ~1분 | ❌ | ❌ |
-| 17 | [ctx-burn](feature-pack/ctx-burn/) | **로컬 컨텍스트 낭비 감사기** — claude·codex·pi·opencode·hermes·openclaw·commandcode 7종 런타임 자동 감지 · 자동 로드 메모리·캐시 전면 재작성·요청당 컨텍스트·증류 손익분기를 그래프로 · `--json` 이 용량 계약(`ctx.v1`)을 낸다 (기본 영어 · `--lang ko` · `ctx-waste` alias 유지) | ~1분 | ❌ | ❌ |
-| 19-2 | [ctx-plan](feature-pack/ctx-plan/) | **용량·감당량 산정기** — ctx-burn 의 `ctx.v1` 만 읽어 계정 구성으로 정원·피크 세션·골 처리량 계산 · 0순위 고정상수 점검 · 필요 구독 장수 역산 (쓰기·네트워크·세션로그 읽기 0 · ) | ~1분 | ❌ | ❌ |
-
-### 난이도 & 의존성
-
-| Feature Pack | CLI | 설치 방식 | macOS | 비고 |
-|-------------|-----|----------|:-----:|------|
-| agent-browser | `agent-browser` | `npm i -g @anthropic-ai/agent-browser` | ✅ | Node.js 필요 |
-| imsg | `imsg` | `brew install` | ✅ | macOS 전용 (iMessage) |
-| notebooklm | `nlm` | `uv tool install` | ✅ | Google 계정 로그인 필요 |
-| obsidian-cli | `obsidian-cli` | `brew install` | ✅ | Obsidian 앱 선택적 |
-| tts-say | `tts-say` | 스크립트 복사 | ✅ | ElevenLabs API 키 선택적 |
-| yt-transcribe | `ytdl` + `whisper-cli` + `ffmpeg` | cargo + brew | ✅ | 빌드 시간 ~5분 |
-| termaid | `termaid-render` | go build + cp | ✅ | Go 필요 |
-| baton | `baton` | 스크립트 설치 | ✅ | bash, git, tmux 선택 |
-| cairn | `cairn` | 스크립트 설치 + venv | ✅ | python3, git, ruamel.yaml |
-| tmuxc | `tmuxc` | 스크립트 설치 | ✅ | bash, git, tmux |
-| tmm | `tmm` | 스크립트 설치 | ✅ | bash≥4, tmux, fzf (tmuxc 선택) |
-| auto | — (순수 스킬) | 스킬 파일 복사 | ✅ | git, python3 필요 |
-| agent-cli | (기존 에이전트 CLI 호출) | 스킬 파일 복사 | ✅ | perl, python3 + 에이전트 CLI ≥1 |
-| headroom | `headroom` / LaunchAgent | venv + 스킬 파일 복사 | ✅ | python3.12, curl |
-| ctx-burn | `ctx-burn` / `ctx-waste` | `install.sh` (심링크) | ✅ | python3 ≥3.8 (표준 라이브러리만) |
-| ctx-plan | `ctx-plan` | `install.sh` (심링크) + 상수 파일 | ✅ | python3 ≥3.8, ctx-burn |
+</div>
 
 ---
 
-## 🚀 설치 방법
+## What is this?
 
-### 방법 1: 에이전트 자율 설치 (추천)
+- A collection of **feature packs** for AI coding agents. One pack = one folder under [`feature-pack/`](feature-pack/). Packs are independent — install only what you need.
+- Every pack ships an `INSTALL.md` written **for the agent**: hand it to your agent and it checks prerequisites, installs the CLI, registers the skill and verifies the result.
+- New here? Start with the illustrated guide: **[Use your AI agents from your phone](https://yoonhwan.github.io/aifp/)** ([Korean](https://yoonhwan.github.io/aifp/ko.html)).
+
+## 🚀 Quick start
+
+**Option A — the phone-remote pair (`tmuxc` + `tmm`)**
 
 ```bash
-# 1. 레포 클론
+git clone https://github.com/yoonhwan/aifp.git && cd aifp \
+  && bash feature-pack/tmuxc/install.sh \
+  && bash feature-pack/tmm/install.sh
+```
+
+Requires macOS, bash 4+, git, tmux, and fzf (for `tmm`).
+
+**Option B — let your agent install a pack**
+
+```bash
 git clone https://github.com/yoonhwan/aifp.git
-
-# 2. 원하는 피처팩의 INSTALL.md를 에이전트에게 전달
-# 예: "feature-pack/agent-browser/INSTALL.md 읽고 설치해줘"
+# then tell your agent, for example:
+#   "Read feature-pack/agent-browser/INSTALL.md and install it"
 ```
 
-에이전트가 INSTALL.md를 읽고:
-1. 사전 요구사항 확인
-2. CLI 설치
-3. 인증/설정 (필요시 사용자에게 질문)
-4. OpenClaw 스킬 등록
-5. TOOLS.md / AGENTS.md 설정 추가
-6. 설치 검증
+The agent reads `INSTALL.md` and then:
 
-### 방법 2: 수동 설치
+1. checks prerequisites
+2. installs the CLI
+3. sets up auth/config (asks you when needed)
+4. registers the skill
+5. adds the `TOOLS.md` / `AGENTS.md` sections
+6. verifies the install
 
-각 피처팩 폴더의 `README.md`를 읽고 순서대로 진행:
+## 📦 Catalog
 
-```
-feature-pack/{name}/
-├── README.md        ← 사람용 개요 (여기서 시작)
-├── cli/install.md   ← CLI 설치 명령어
-├── skill/SKILL.md   ← 스킬 정의 복사
-├── config/          ← TOOLS.md / AGENTS.md 추가 내용
-└── test/verify.md   ← 설치 검증
-```
+| # | Pack | What it does | Install | API key | Auth |
+|---|------|--------------|---------|---------|------|
+| 1 | [agent-browser](feature-pack/agent-browser/) | Web automation — scraping, screenshots, form filling, recording | ~3 min | — | — |
+| 2 | [imsg](feature-pack/imsg/) | iMessage/SMS — read conversations, send messages, live watch | ~3 min | — | — |
+| 3 | [notebooklm](feature-pack/notebooklm/) | Google NotebookLM — source-grounded Q&A, research, audio generation | ~5 min | — | Google |
+| 4 | [obsidian-cli](feature-pack/obsidian-cli/) | Obsidian vault CLI — read, create, search and move notes | ~3 min | — | — |
+| 5 | [tts-say](feature-pack/tts-say/) | Unified TTS — macOS `say` + ElevenLabs speech synthesis | ~3 min | ElevenLabs | — |
+| 6 | [yt-transcribe](feature-pack/yt-transcribe/) | YouTube → speech-to-text → summary pipeline | ~10 min | — | — |
+| 7 | [termaid](feature-pack/termaid/) | Mermaid diagrams rendered in the terminal — triggers automatically for design visuals | ~2 min | — | — |
+| 8 | [baton](feature-pack/baton/) | Multi-agent handoff / worktree / archive standard — pass work between Claude Code, Codex and Gemini | ~2 min | — | — |
+| 9 | [cairn](feature-pack/cairn/) | Schedule + multi-agent recovery ledger — milestone / task / session lineage, works with baton and tmuxc | ~2 min | — | — |
+| 10 | [tmuxc](feature-pack/tmuxc/) | tmux session launcher and control for Claude Code, Codex and OMX — includes a verified send/capture messaging standard | ~1 min | — | — |
+| 11 | [auto](feature-pack/auto/) | AutoResearch autonomous experiment loop — baseline → goal → self-driving optimization | ~1 min | — | — |
+| 12 | [nanoclaw](feature-pack/nanoclaw/) | Multi-agent platform (an OpenClaw alternative) — Claude SDK brain, Docker isolation, multi-crew | ~15 min | — | Slack |
+| 13 | [agent-cli](feature-pack/agent-cli/) | **AI coding agent CLI toolkit** — install and compare CLIs, plus non-interactive delegation with personas | ~3 min | — | — |
+| 14 | [headroom](feature-pack/headroom/) | Context-compression proxy for AI coding agents such as Claude Code and Codex, with a `/headroom` toggle | ~5 min | — | — |
+| 15 | [fable-team](feature-pack/fable-team/ft2/) | **Team orchestration harness (ft 2.0)** — shared core for seats, notes and work orders; contract definitions; Codex / Pi / Slack adapters; diagnostics. Folder responsibilities are in `ft2/README.md` | — | — | — |
+| 16 | [tmm](feature-pack/tmm/) | **Mobile (SSH) tmux seat TUI** — pick among dozens of agent sessions with a cursor on your phone: preview, most-recent-first, waiting-seats-first, send messages (fzf) | ~1 min | — | — |
+| 17 | [ctx-burn](feature-pack/ctx-burn/) | **Local context-waste auditor** — auto-detects 7 runtimes (claude, codex, pi, opencode, hermes, openclaw, commandcode) | ~1 min | — | — |
+| 18 | [ctx-plan](feature-pack/ctx-plan/) | **Capacity planner** — reads only ctx-burn's `ctx.v1` output to size seats and peak sessions for your account mix | ~1 min | — | — |
 
-### 방법 3: 전체 설치
+**Also in the tree** (each folder has its own docs):
+[agent-surface-audit](feature-pack/agent-surface-audit/) — dry-run inventory of agent skill and hook surfaces ·
+[agent-surface-sync](feature-pack/agent-surface-sync/) — installs or updates shared agent surfaces from `feature-pack/*` and `hooks/` ·
+[code-intel](feature-pack/code-intel/) — code intelligence behind a single `ci` entry point ·
+[daily-trend-viewer](feature-pack/daily-trend-viewer/) — local site for daily popular videos and AI video news ·
+[mcp-manager](feature-pack/mcp-manager/) — audit and trim MCP server surfaces ·
+[memory-system](feature-pack/memory-system/) — memory structure for OpenClaw agents ·
+[rag](feature-pack/rag/) and [rag-consumer](feature-pack/rag-consumer/) — the `airag` RAG package and its consumer (start at [`rag/docs/README.md`](feature-pack/rag/docs/README.md)).
 
-```
-에이전트에게: "aifp 레포의 모든 피처팩을 순서대로 설치해줘"
-```
+## 📋 Recommended order
 
-> ⚠️ 전체 설치 시 약 25분 소요. 의존성 없는 팩부터 자동 정렬.
+Packs do not depend on each other. By usefulness:
 
----
+1. **obsidian-cli** — second-brain base (where other packs store notes)
+2. **agent-browser** — web automation (the most general)
+3. **yt-transcribe** — YouTube transcripts (pairs well with obsidian-cli)
+4. **notebooklm** — knowledge Q&A (source-grounded answers)
+5. **tts-say** — voice output
+6. **imsg** — iMessage integration (macOS only)
 
-## 📋 추천 설치 순서
+For operating many agents at once:
 
-피처 간 의존성은 없지만, 활용도 기준 추천 순서:
+1. **baton** — the reference point for worktree / handoff / archive
+2. **cairn** — schedule and session-lineage ledger
+3. **tmuxc** — run Claude Code / Codex / OMX in tmux sessions with verified-send messaging
+4. **tmm** — pick and attach to those seats from your phone (Termius)
 
-1. **obsidian-cli** — 세컨드브레인 기반 (다른 피처의 노트 저장처)
-2. **agent-browser** — 웹 자동화 (가장 범용적)
-3. **yt-transcribe** — YouTube 전사 (obsidian-cli와 시너지)
-4. **notebooklm** — 지식 Q&A (소스 기반 답변)
-5. **tts-say** — 음성 출력 (편의성)
-6. **imsg** — iMessage 연동 (macOS 전용)
-
-운영형 멀티 에이전트 작업은 다음 순서를 권장합니다.
-
-1. **baton** — worktree/handoff/archive 기준점
-2. **cairn** — schedule/session lineage 원장
-3. **tmuxc** — Claude Code/Codex/OMX tmux 세션 실행과 verified-send 통신
-4. **tmm** — 폰(Termius)에서 그 좌석들을 커서로 고르고 붙는 TUI
-
-이 세트의 책임 경계:
-
-| 도구 | 담당 |
+| Tool | Owns |
 |------|------|
-| baton | 작업 시작/저장/복구용 `.baton/handoff/`와 worktree/archive |
-| cairn | `.cairn/plan.yaml` 기반 milestone/task/session lineage와 hook reconcile |
-| tmuxc | live tmux agent session 생성, capture, send, kill, Codex verified-send 표준 |
-| tmm | 모바일 SSH 에서 좌석 목록·미리보기·attach·메시지 (tmuxc 좌석 소비자) |
+| baton | `.baton/handoff/` for starting, saving and recovering work, plus worktree / archive |
+| cairn | `.cairn/plan.yaml`-based milestone / task / session lineage |
+| tmuxc | live tmux agent sessions — create, capture, send, kill |
+| tmm | seat list, preview, attach and messages over mobile SSH (a consumer of tmuxc seats) |
 
----
+## 🔧 Other ways to install
 
-## 🔧 피처팩 구조 (공통)
+**Manual** — read the pack's `README.md` and follow it in order:
 
 ```
 feature-pack/{name}/
-├── INSTALL.md          ← 에이전트용 설치 프롬프트 (핵심!)
-│                         {{PLACEHOLDER}} → 사용자 인터뷰로 대치
-├── README.md           ← 사람용 개요
-├── manifest.json       ← 메타데이터 (OS, 의존성, 설치시간)
-├── skill/              ← OpenClaw 스킬 폴더
-│   └── SKILL.md        ← 스킬 정의 (CLI 명령어 전체)
-├── cli/                ← CLI 설치
-│   └── install.md      ← 설치 명령어 + 검증
-├── config/             ← OpenClaw 설정 조각
-│   ├── tools-section.md    ← TOOLS.md 추가 섹션
-│   └── agents-section.md   ← AGENTS.md 추가 섹션 (해당 시)
-├── obsidian/           ← Obsidian 연동 (해당 시)
-│   └── setup.md
-└── test/               ← 설치 검증
-    └── verify.md
+├── README.md        ← overview for humans (start here)
+├── INSTALL.md       ← install prompt for the agent
+├── cli/install.md   ← CLI install commands
+├── skill/SKILL.md   ← skill definition
+├── config/          ← sections to add to TOOLS.md / AGENTS.md
+└── test/verify.md   ← install verification
 ```
 
----
+Not every pack has every file; five packs (`ctx-plan`, `fable-team`, `headroom`, `rag`, `rag-consumer`) have no `INSTALL.md` — start from their README or docs.
 
-## 📌 참고
+**Everything** — tell your agent: "Install every feature pack in the aifp repo, in order." This takes about 25 minutes.
 
-- **OS**: 현재 macOS만 지원 (Linux/Windows 추후 업데이트)
-- **OpenClaw**: [openclaw.ai](https://openclaw.ai) | [GitHub](https://github.com/openclaw/openclaw)
-- **문의**: 이슈 등록 또는 [Discord](https://discord.com/invite/clawd)
+## 🔒 About this repository
 
-## 라이선스
+- This is an **exported copy** of a private working repository. Internal operation notes were removed and personal or organization identifiers were replaced with placeholders, so some tests that need private data are skipped or will not run here.
+- Every export runs a 58-pattern scan (keys, tokens, addresses, IDs) and stops unless nothing is left outside a reviewed allowlist. Key-shaped strings that remain are test fixtures or documentation placeholders.
+- When you install a pack, do not write your own keys or tokens into files inside the repo folder.
+
+## 📌 Notes
+
+- **OS**: macOS only for now (Linux / Windows later).
+- **OpenClaw**: [openclaw.ai](https://openclaw.ai) · [GitHub](https://github.com/openclaw/openclaw)
+- **Questions**: open an issue or join the [Discord](https://discord.com/invite/clawd).
+
+## License
 
 MIT
