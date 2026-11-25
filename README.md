@@ -15,11 +15,19 @@ Claude Code · Codex · Pi · OpenCode · OpenClaw
 
 ---
 
+## 📱 Work from your phone
+
+Your agents keep running on your Mac. Your phone is just the window.
+
+- **Tailscale** puts the phone and the Mac on one private network, and **Termius** (SSH) is the door in.
+- **tmux** keeps every session alive after you disconnect. **`tmuxc`** opens sessions and **`tmm`** lets you pick one with your thumb.
+
+**→ Official guide: [Work from your phone](https://yoonhwan.github.io/aifp/)**
+
 ## What is this?
 
 - A collection of **feature packs** for AI coding agents. One pack = one folder under [`feature-pack/`](feature-pack/). Packs are independent — install only what you need.
 - Every pack ships an `INSTALL.md` written **for the agent**: hand it to your agent and it checks prerequisites, installs the CLI, registers the skill and verifies the result.
-- New here? Start with the illustrated guide: **[Use your AI agents from your phone](https://yoonhwan.github.io/aifp/)** ([Korean](https://yoonhwan.github.io/aifp/ko.html)).
 
 ## 🚀 Quick start
 

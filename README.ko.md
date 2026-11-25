@@ -15,11 +15,19 @@ Claude Code · Codex · Pi · OpenCode · OpenClaw
 
 ---
 
+## 📱 휴대폰에서 일하기
+
+에이전트는 맥에서 계속 일하고, 휴대폰은 그 창입니다.
+
+- **Tailscale** 이 휴대폰과 맥을 한 사설 네트워크에 놓고, **Termius**(SSH)로 들어갑니다.
+- **tmux** 가 연결이 끊겨도 세션을 살려 둡니다. **`tmuxc`** 로 세션을 열고 **`tmm`** 으로 엄지로 고릅니다.
+
+**→ 공식 안내: [휴대폰에서 일하는 법](https://yoonhwan.github.io/aifp/ko.html)**
+
 ## 이 리포는 무엇인가요?
 
 - AI 코딩 에이전트를 위한 **피처 팩** 모음입니다. 팩 하나는 [`feature-pack/`](feature-pack/) 아래 폴더 하나입니다. 팩은 서로 독립이라 필요한 것만 설치하면 됩니다.
 - 팩마다 **에이전트가 읽는** `INSTALL.md` 가 있습니다. 에이전트에게 건네면 사전 요구사항 확인, CLI 설치, 스킬 등록, 설치 검증까지 진행합니다.
-- 처음이라면 그림으로 설명한 안내 글부터 보세요: **[내 AI 에이전트를 폰에서 쓰는 법](https://yoonhwan.github.io/aifp/ko.html)** ([English](https://yoonhwan.github.io/aifp/)).
 
 ## 🚀 빠른 시작
 

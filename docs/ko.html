@@ -3,287 +3,153 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AI Feature Pack — 내 AI 에이전트를 폰에서 쓰는 법</title>
+<title>휴대폰에서 일하는 법 — AI Feature Pack</title>
+<meta name="description" content="휴대폰에서 AI 코딩 에이전트로 일하는 법: 에이전트는 맥에서 돌고, 휴대폰은 그 창입니다.">
 <style>
-:root{--bg:#f6f5f1;--card:#fff;--ink:#1b1a18;--sub:#615e57;--line:#e1ded5;--acc:#0b6e5f;--accbg:#e4f3ef;--warn:#b4451f;--code:#f1efe9;--term:#14161a;--termink:#d7dbe0;--ok:#1f7a4d}
-@media (prefers-color-scheme:dark){:root{--bg:#151614;--card:#1e1f1c;--ink:#ecebe6;--sub:#a6a39a;--line:#33342f;--acc:#5fd3bd;--accbg:#17302b;--warn:#ff8a5c;--code:#262722;--term:#0c0d10;--termink:#d7dbe0;--ok:#5fd39a}}
+:root{--bg:#f6f5f1;--card:#fff;--ink:#1b1a18;--sub:#615e57;--line:#e1ded5;--acc:#0b6e5f;--accbg:#e4f3ef;--warn:#d9822b;--term:#14161a;--termink:#d7dbe0}
+@media (prefers-color-scheme:dark){:root{--bg:#151614;--card:#1e1f1c;--ink:#ecebe6;--sub:#a6a39a;--line:#33342f;--acc:#5fd3bd;--accbg:#17302b;--warn:#ffb86b;--term:#0c0d10;--termink:#d7dbe0}}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.75 -apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Malgun Gothic","Noto Sans KR",sans-serif;word-break:keep-all;overflow-wrap:anywhere}
-main{max-width:880px;margin:0 auto;padding:36px 20px 80px}
-h1{font-size:32px;line-height:1.3;margin:0 0 12px;letter-spacing:-.02em}
-h2{font-size:22px;margin:52px 0 12px;padding-top:10px;border-top:2px solid var(--ink);letter-spacing:-.01em}
-h3{font-size:17px;margin:26px 0 8px}
-p{margin:8px 0}
-ul,ol{padding-left:22px;margin:8px 0}
-li{margin:6px 0}
+body{margin:0;background:var(--bg);color:var(--ink);font:18px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","Apple SD Gothic Neo","Malgun Gothic","Noto Sans KR",sans-serif;word-break:keep-all;overflow-wrap:anywhere}
+main{max-width:760px;margin:0 auto;padding:28px 18px 72px}
 a{color:var(--acc)}
-code{font:14px ui-monospace,SFMono-Regular,Menlo,Consolas,"D2Coding",monospace;background:var(--code);padding:1px 6px;border-radius:5px}
-.sub{color:var(--sub)}
-.small{font-size:14px;color:var(--sub)}
-.toc{display:flex;flex-wrap:wrap;gap:8px;margin:18px 0 0;padding:0;list-style:none}
-.toc a{display:block;padding:6px 13px;border:1px solid var(--line);border-radius:999px;background:var(--card);color:var(--ink);text-decoration:none;font-size:14px}
-.toc a:focus-visible,.copy:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin:14px 0}
-.eli{background:var(--accbg);border-color:transparent}
-.eli b{color:var(--acc)}
-/* 그림: 폰 → 한 네트워크 → 컴퓨터 안 좌석들 (CSS 만) */
-.pic{display:grid;grid-template-columns:150px 1fr 1.6fr;gap:14px;align-items:center;margin:18px 0}
-.phone{border:3px solid var(--ink);border-radius:22px;padding:12px 8px 16px;background:var(--term);color:var(--termink);font:11px/1.5 ui-monospace,Menlo,Consolas,monospace;min-height:190px}
-.phone .bar{height:5px;width:44px;background:#555;border-radius:3px;margin:0 auto 8px}
-.phone .hl{background:#234;border-radius:3px;color:#fff}
-.phone .w{color:#ffcf6b}.phone .b{color:#7fd1ff}.phone .i{color:#8a9099}
-.wire{text-align:center;font-size:13px;color:var(--sub)}
-.wire .ln{height:2px;background:repeating-linear-gradient(90deg,var(--acc) 0 8px,transparent 8px 14px);margin:8px 0}
-.pc{border:2px solid var(--ink);border-radius:12px;padding:12px;background:var(--card)}
-.pc .tt{font-size:13px;color:var(--sub);margin-bottom:8px}
-.seats{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-.seat{border:1px solid var(--line);border-radius:9px;padding:7px 9px;font-size:13px;background:var(--bg)}
-.seat i{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;background:#8a9099}
-.seat.w i{background:#e0a100}.seat.b i{background:#2f8fd8}
-.cap{font-size:13px;color:var(--sub);text-align:center;margin-top:-6px}
-.steps{counter-reset:s;list-style:none;padding:0;display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px}
-.steps li{counter-increment:s;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin:0}
-.steps li::before{content:counter(s);display:inline-flex;width:24px;height:24px;border-radius:50%;background:var(--acc);color:#fff;align-items:center;justify-content:center;font-size:13px;font-weight:700;margin-right:8px}
-.steps b{display:inline}
-.steps span{display:block;font-size:14px;color:var(--sub);margin-top:6px}
-.two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
-.tool h3{margin-top:0;font-size:20px}
-.tool .tag{display:inline-block;font-size:12px;font-weight:700;color:var(--acc);background:var(--accbg);padding:2px 9px;border-radius:999px;margin-bottom:6px}
-.term{background:var(--term);color:var(--termink);border-radius:12px;padding:14px 16px;font:13px/1.6 ui-monospace,SFMono-Regular,Menlo,Consolas,"D2Coding",monospace;overflow-x:auto;white-space:pre;margin:10px 0}
-.term .k{color:#6fe0d0}.term .d{color:#8a9099}.term .w{color:#ffcf6b}.term .b{color:#7fd1ff}.term .s{background:#263445;color:#fff}
-.tw{overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:var(--card);margin:10px 0}
-table{border-collapse:collapse;width:100%;font-size:15px}
-th,td{padding:9px 12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
-thead th{background:var(--code);font-weight:600}
-tbody tr:last-child td{border-bottom:0}
-td:first-child{white-space:nowrap}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(245px,1fr));gap:10px}
-.pk{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px}
-.pk b{display:block}
-.pk span{font-size:14px;color:var(--sub)}
-.codewrap{position:relative;margin:10px 0}
-.codewrap .term{padding-top:44px;white-space:pre-wrap;word-break:break-all}
-.copy{position:absolute;top:8px;right:8px;font:inherit;font-size:13px;padding:5px 12px;border-radius:8px;border:1px solid #3a3f47;background:#22262c;color:#e6e8eb;cursor:pointer}
-.copy.done{color:#5fd39a;border-color:#5fd39a}
-.sec li b{color:var(--acc)}
-.sec .zero{font-size:26px;font-weight:800;color:var(--ok)}
-footer{margin-top:52px;border-top:1px solid var(--line);padding-top:14px;font-size:13px;color:var(--sub)}
-@media (max-width:640px){h1{font-size:26px}main{padding:24px 14px 60px}.pic{grid-template-columns:1fr}.phone{max-width:190px;margin:0 auto}.two{grid-template-columns:1fr}.wire .ln{background:none;height:0;margin:0}}
-.langs{font-size:.9rem;color:var(--sub)}
+.langs{font-size:.85rem;color:var(--sub);margin:0 0 20px}
+h1{font-size:clamp(2rem,7vw,3.2rem);line-height:1.15;margin:0 0 10px;letter-spacing:-.02em}
+.sub{font-size:1.25rem;color:var(--sub);margin:0 0 28px}
+h2{font-size:1.6rem;margin:56px 0 16px;letter-spacing:-.01em}
+.pic{background:var(--card);border:1px solid var(--line);border-radius:20px;padding:18px}
+.pic svg{display:block;width:100%;height:auto}
+.cap{text-align:center;font-size:1.1rem;margin:14px 0 0}
+.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}
+.box{background:var(--card);border:1px solid var(--line);border-radius:20px;padding:20px 14px;text-align:center}
+.ico{font-size:3.2rem;line-height:1}
+.box b{display:block;font-size:1.25rem;margin:10px 0 4px}
+.box span{color:var(--sub);font-size:1rem}
+.steps{list-style:none;margin:0;padding:0;display:grid;gap:14px}
+.steps li{display:grid;grid-template-columns:64px 1fr;gap:14px;align-items:center;background:var(--card);border:1px solid var(--line);border-radius:20px;padding:16px}
+.steps .ico{font-size:2.6rem;text-align:center}
+.steps b{display:block;font-size:1.15rem}
+.steps span{color:var(--sub);font-size:1rem}
+code,.term{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+code{background:var(--accbg);border-radius:6px;padding:.1em .35em;font-size:.88em}
+.term{background:var(--term);color:var(--termink);border-radius:14px;padding:14px 16px;font-size:.82rem;line-height:1.55;white-space:pre;overflow-x:auto;margin:10px 0 0}
+.term .w{color:#ffb86b}
+.term .b{color:#7fd6c2}
+.term .d{color:#7d838c}
+.aifp{display:grid;grid-template-columns:150px 1fr;gap:18px;align-items:center}
+.aifp p{margin:0 0 8px;font-size:1.1rem}
+@media (max-width:520px){.aifp{grid-template-columns:1fr;text-align:center}.aifp svg{max-width:170px;margin:0 auto}}
+.small{font-size:.95rem;color:var(--sub)}
+.todo{margin:0;padding-left:1.3em}
+.todo li{margin:6px 0}
+.btn{display:inline-block;margin-top:12px;background:var(--acc);color:var(--bg);text-decoration:none;font-weight:700;border-radius:999px;padding:10px 20px}
+footer{margin-top:56px;font-size:.85rem;color:var(--sub);text-align:center}
+svg text{font-family:inherit;fill:var(--ink)}
+svg .s{fill:var(--sub)}
 </style>
 </head>
 <body>
 <main>
+<p class="langs"><a href="index.html">English</a> · <a href="ko.html">한국어</a> · <a href="https://github.com/yoonhwan/aifp/blob/main/README.ja.md">日本語 (README)</a> · <a href="https://github.com/yoonhwan/aifp/blob/main/README.zh-CN.md">简体中文 (README)</a></p>
 
 <header>
-<p class="langs"><a href="index.html">English</a> · <a href="ko.html">한국어</a> · <a href="https://github.com/yoonhwan/aifp/blob/main/README.ja.md">日本語 (README)</a> · <a href="https://github.com/yoonhwan/aifp/blob/main/README.zh-CN.md">简体中文 (README)</a></p>
-<h1>내 AI 에이전트를, 폰에서 씁니다</h1>
-<p class="sub">AI Feature Pack 은 코딩 에이전트를 쓰는 분을 위한 도구 묶음입니다. 필요한 것만 골라 설치하실 수 있습니다. 이 글은 그 가운데 «집 컴퓨터의 에이전트를 밖에서 폰으로 다루는 법» 을 먼저 안내해 드립니다.</p>
-<ul class="toc" aria-label="차례">
-<li><a href="#eli5">한눈에 보기</a></li>
-<li><a href="#remote">원격으로 쓰는 법</a></li>
-<li><a href="#tools">tmuxc · tmm</a></li>
-<li><a href="#team">fable-team</a></li>
-<li><a href="#packs">그 밖의 팩</a></li>
-<li><a href="#install">설치</a></li>
-<li><a href="#security">보안 점검</a></li>
-</ul>
+<h1>📱 휴대폰에서 일하는 법</h1>
+<p class="sub">AI 코딩 에이전트는 맥에서 계속 일합니다. 휴대폰은 그 창입니다.</p>
 </header>
 
-<h2 id="eli5">한눈에 보기</h2>
-<div class="card eli">
-<p><b>쉬운 비유로 말씀드리면</b> — 집 컴퓨터는 사무실이고, AI 에이전트는 그 안에서 일하는 직원입니다. 직원마다 자기 책상(터미널 세션)이 있습니다.</p>
-<p>폰은 그 사무실을 들여다보는 <b>창문이자 인터폰</b>입니다. 밖에 계셔도 직원들은 계속 일하고, 폰으로 «지금 누가 저를 기다리나» 를 보고, 한마디 건네고, 다시 주머니에 넣으시면 됩니다.</p>
+<div class="pic">
+<svg viewBox="0 0 480 256" role="img" aria-label="에이전트 넷이 있는 맥과 휴대폰이 한 사설 네트워크로 이어진 그림">
+<rect x="12" y="20" width="216" height="150" rx="14" fill="var(--accbg)" stroke="var(--acc)" stroke-width="3"/>
+<rect x="100" y="170" width="40" height="16" fill="var(--acc)"/>
+<rect x="70" y="186" width="100" height="8" rx="4" fill="var(--acc)"/>
+<rect x="24" y="32" width="90" height="58" rx="10" fill="var(--card)" stroke="var(--line)"/>
+<rect x="126" y="32" width="90" height="58" rx="10" fill="var(--card)" stroke="var(--line)"/>
+<rect x="24" y="100" width="90" height="58" rx="10" fill="var(--card)" stroke="var(--line)"/>
+<rect x="126" y="100" width="90" height="58" rx="10" fill="var(--card)" stroke="var(--line)"/>
+<text x="38" y="71" font-size="26">🤖</text>
+<text x="140" y="71" font-size="26">🤖</text>
+<text x="38" y="139" font-size="26">🤖</text>
+<text x="140" y="139" font-size="26">🤖</text>
+<circle cx="94" cy="61" r="8" fill="var(--warn)"/>
+<circle cx="196" cy="61" r="8" fill="var(--acc)"/>
+<circle cx="94" cy="129" r="8" fill="var(--acc)"/>
+<circle cx="196" cy="129" r="8" fill="var(--line)"/>
+<text x="120" y="222" text-anchor="middle" font-size="17" font-weight="700">내 맥</text>
+<text x="120" y="244" text-anchor="middle" font-size="14" class="s">에이전트가 계속 일함</text>
+<line x1="238" y1="95" x2="340" y2="95" stroke="var(--acc)" stroke-width="4" stroke-dasharray="10 9" stroke-linecap="round"/>
+<text x="289" y="82" text-anchor="middle" font-size="24">🔒</text>
+<text x="289" y="120" text-anchor="middle" font-size="13" class="s">한 사설</text>
+<text x="289" y="137" text-anchor="middle" font-size="13" class="s">네트워크</text>
+<rect x="352" y="14" width="112" height="176" rx="18" fill="var(--card)" stroke="var(--ink)" stroke-width="3.5"/>
+<rect x="392" y="23" width="32" height="5" rx="2.5" fill="var(--line)"/>
+<rect x="362" y="42" width="92" height="30" rx="8" fill="var(--accbg)" stroke="var(--acc)" stroke-width="2"/>
+<circle cx="377" cy="57" r="6" fill="var(--warn)"/>
+<rect x="390" y="53" width="52" height="8" rx="4" fill="var(--ink)"/>
+<rect x="362" y="80" width="92" height="30" rx="8" fill="none" stroke="var(--line)"/>
+<circle cx="377" cy="95" r="6" fill="var(--acc)"/>
+<rect x="390" y="91" width="40" height="8" rx="4" fill="var(--line)"/>
+<rect x="362" y="118" width="92" height="30" rx="8" fill="none" stroke="var(--line)"/>
+<circle cx="377" cy="133" r="6" fill="var(--acc)"/>
+<rect x="390" y="129" width="46" height="8" rx="4" fill="var(--line)"/>
+<text x="436" y="180" text-anchor="middle" font-size="24">👆</text>
+<text x="408" y="222" text-anchor="middle" font-size="17" font-weight="700">내 휴대폰</text>
+<text x="408" y="244" text-anchor="middle" font-size="14" class="s">들여다보는 창</text>
+</svg>
+<p class="cap">일은 집에서 계속됩니다. 어디서든 들여다보면 됩니다.</p>
 </div>
 
-<div class="pic" role="img" aria-label="폰이 한 네트워크를 거쳐 집 컴퓨터의 에이전트 세션 네 개에 닿는 그림">
-<div class="phone" aria-hidden="true">
-<div class="bar"></div>
-<div class="i">좌석&gt;</div>
-<div class="hl">▶ <span class="w">기다림</span> 결제-수정</div>
-<div>&nbsp; <span class="b">일하는 중</span> 문서</div>
-<div>&nbsp; <span class="b">일하는 중</span> 테스트</div>
-<div>&nbsp; <span class="i">쉬는 중</span> 조사</div>
-<div class="i">──────────</div>
-<div>승인해 주시면</div>
-<div>배포하겠습니다.</div>
-</div>
-<div class="wire" aria-hidden="true">폰<div class="ln"></div>한 네트워크 + SSH<div class="ln"></div>집 컴퓨터</div>
-<div class="pc" aria-hidden="true">
-<div class="tt">집 컴퓨터 · 터미널을 닫아도 계속 살아 있는 세션들</div>
-<div class="seats">
-<div class="seat w"><i></i>결제-수정 · 답을 기다림</div>
-<div class="seat b"><i></i>문서 · 일하는 중</div>
-<div class="seat b"><i></i>테스트 · 일하는 중</div>
-<div class="seat"><i></i>조사 · 쉬는 중</div>
-</div>
-</div>
-</div>
-<p class="cap">폰 화면에는 «누가 기다리는지» 가 맨 위에 오고, 고른 세션의 마지막 말이 아래에 보입니다.</p>
-
-<h2 id="remote">원격으로 쓰는 법 — 짧게</h2>
-<ol class="steps">
-<li><b>기기를 한 네트워크로</b><span>Tailscale 을 폰과 컴퓨터에 설치하시면 두 기기가 같은 사설 네트워크에 놓입니다. 공유기 설정을 건드리실 필요가 없습니다.</span></li>
-<li><b>폰에서 SSH 로 접속</b><span>Termius 같은 SSH 앱으로 컴퓨터에 들어갑니다. 키 인증을 쓰시기를 권해 드립니다.</span></li>
-<li><b>세션은 tmux 가 지킵니다</b><span>에이전트를 tmux 세션 안에서 띄워 두시면, 터미널을 닫거나 폰 연결이 끊겨도 세션은 그대로 살아 있습니다.</span></li>
-<li><b>다시 붙기만 하시면 됩니다</b><span>대화를 다시 불러오는 resume 이 필요 없습니다. 살아 있는 세션에 붙으면 하던 화면 그대로입니다.</span></li>
-</ol>
-<p class="small">여기까지가 바탕입니다. 다만 세션이 많아지면 폰에서 이름을 치고 찾는 일이 힘들어집니다. 아래 두 도구가 그 부분을 맡습니다.</p>
-
-<h2 id="tools">tmuxc · tmm — 가장 먼저 권해 드리는 두 가지</h2>
-<p>이 묶음에서 가장 쓰기 편한 조합이라 먼저 권해 드립니다. <b>tmuxc 로 세션을 열고, tmm 으로 폰에서 고릅니다.</b></p>
-
-<div class="two">
-<div class="card tool">
-<span class="tag">컴퓨터에서 · 여는 도구</span>
-<h3>tmuxc</h3>
-<p>프로젝트 폴더나 git worktree 에 에이전트 세션을 한 줄로 엽니다. Claude Code · Codex CLI · OMX · OpenCode · Command Code · Pi 를 같은 명령으로 다룹니다.</p>
-<ul>
-<li>세션 열기 · 목록 · 정리</li>
-<li>붙지 않고 최근 출력 읽기</li>
-<li>세션에 메시지를 보내고 도착을 확인</li>
-<li>끄기 전 저장, 재부팅 뒤 복원</li>
-<li>대화를 다른 세션으로 갈라 이어 가기(fork)</li>
-</ul>
-</div>
-<div class="card tool">
-<span class="tag">폰에서 · 고르는 도구</span>
-<h3>tmm</h3>
-<p>수십 개의 세션(«좌석»)을 한 화면에서 커서로 고르는 TUI 입니다. 폰 키보드로 세션 이름을 치실 일이 없습니다.</p>
-<ul>
-<li>커서와 몇 글자 검색으로 좌석 고르기</li>
-<li>붙지 않고 미리보기(자동 갱신)</li>
-<li>고른 좌석에 메시지 보내기</li>
-<li>사람 입력을 기다리는 좌석을 맨 위로</li>
-<li>가장 최근에 말한 좌석 순으로 정렬</li>
-</ul>
-</div>
-</div>
-
-<h3>tmuxc — 자주 쓰는 명령</h3>
-<div class="term" tabindex="0" aria-label="tmuxc 명령 보기"><span class="d"># 프로젝트 폴더에 에이전트 세션 열기</span>
-tmuxc open ~/work/my-app --name my-app --agent claude
-
-<span class="d"># 지금 열려 있는 세션 보기</span>
-tmuxc list
-
-<span class="d"># 붙지 않고 마지막 출력 40줄 읽기</span>
-tmuxc ask my-app 40
-
-<span class="d"># 세션에 한마디 보내기</span>
-tmuxc send my-app "테스트 돌리고 결과만 알려 주세요"
-
-<span class="d"># 끄기 전에 전부 저장 → 재부팅 뒤 복원</span>
-tmuxc save
-tmuxc restore --go</div>
-
-<h3>tmm — 폰에서 보이는 화면</h3>
-<div class="term" tabindex="0" aria-label="tmm 화면 보기"><span class="d">──────────────────────────────────────── tmm ──</span>
- <span class="d">이동</span> <span class="k">⏎</span> 붙기  <span class="k">^S</span> 메시지  <span class="k">^F</span> fork  <span class="k">^X</span> 끝
- <span class="d">정렬</span> <span class="k">^T</span> 최근  <span class="k">^W</span> 대기  <span class="k">^G</span> 분류  <span class="k">^H</span> 대기만
-좌석&gt; 결제                                 1/24
-<span class="d">───────────────────────────────────────────────</span>
-<span class="s">▶ 앱    ● 결제-수정   <span class="w">HUMAN</span> 12:33  2m  my-app  </span>
-  앱    ● 테스트      <span class="b">BUSY </span> 12:52  6m  my-app
-  문서  ● 안내문      <span class="b">BUSY </span> 12:50  8m  docs
-  조사  ● 자료-정리   <span class="d">IDLE </span> 12:21 37m  notes
-<span class="d">──────────────────── 미리보기 ──────────────────</span>
-⏺ 변경 3건을 올렸습니다. 배포해도 될까요?</div>
-<p class="small">위 화면은 설명을 위한 예시입니다. <code>HUMAN</code> 은 사람의 답을 기다리는 좌석, <code>BUSY</code> 는 일하는 중, <code>IDLE</code> 은 쉬는 중이라는 뜻입니다.</p>
-
-<div class="tw">
-<table>
-<thead><tr><th scope="col">키</th><th scope="col">하는 일</th></tr></thead>
-<tbody>
-<tr><td>↑↓ · 글자 입력</td><td>커서 이동 · 몇 글자로 좌석 걸러 내기</td></tr>
-<tr><td><code>Enter</code></td><td>그 좌석에 붙기. 떼면 고르는 화면으로 돌아옵니다</td></tr>
-<tr><td><code>^S</code></td><td>붙지 않고 메시지 보내기. 보낸 뒤 도착했는지 확인합니다</td></tr>
-<tr><td><code>^W</code> · <code>^H</code></td><td>기다리는 좌석을 위로 · 기다리는 좌석만 보기</td></tr>
-<tr><td><code>^T</code> · <code>^G</code></td><td>최근에 말한 순 · 분류별 묶음</td></tr>
-<tr><td><code>^P</code> · <code>^O</code> · <code>^U</code></td><td>미리보기 켜고 끄기 · 크기 · 자동 갱신 간격</td></tr>
-<tr><td><code>^D</code></td><td>종료된 세션 보기 — 재부팅 뒤 되살릴 때 씁니다</td></tr>
-</tbody>
-</table>
-</div>
-<p class="small">tmm 은 tmuxc 로 연 세션을 전제로 만들었지만 보통 tmux 세션에도 그대로 쓰실 수 있습니다.</p>
-
-<h2 id="team">fable-team — 개념만</h2>
-<div class="card">
-<p>에이전트 한 명이 아니라 <b>여럿을 팀으로</b> 굴리고 싶을 때 쓰는 하네스입니다. 자세한 운영 방식은 리포 문서에 있고, 여기서는 생각의 뼈대만 말씀드립니다.</p>
-<ul>
-<li><b>역할을 나눕니다.</b> 일을 쪼개고 나눠 주는 쪽, 계획을 세우는 쪽, 만드는 쪽, 검토하는 쪽이 서로 다른 세션입니다.</li>
-<li><b>일감은 파일 한 장입니다.</b> 무엇을 하고 언제 끝난 것인지가 글로 적혀 있어, 세션이 바뀌어도 일은 이어집니다.</li>
-<li><b>세션끼리 쪽지를 주고받습니다.</b> 보냈다고 끝내지 않고 도착을 확인합니다.</li>
-<li><b>사람이 정할 일은 사람에게 올립니다.</b> 지우기 · 되돌릴 수 없는 일은 승인 없이 하지 않습니다.</li>
-</ul>
-<p class="small">tmuxc 와 tmm 이 익숙해지신 다음에 보시기를 권해 드립니다.</p>
-</div>
-
-<h2 id="packs">그 밖의 팩 — 짧게</h2>
-<p class="small">팩은 서로 독립입니다. 리포의 카탈로그에서 필요한 것만 고르시면 됩니다.</p>
+<h2>네 가지 조각</h2>
 <div class="grid">
-<div class="pk"><b>agent-browser</b><span>웹 자동화 — 스크래핑 · 스크린샷 · 폼 입력</span></div>
-<div class="pk"><b>agent-cli</b><span>코딩 에이전트 CLI 설치 · 비교 · 일 맡기기</span></div>
-<div class="pk"><b>baton</b><span>에이전트 사이 작업 인계 · worktree 표준</span></div>
-<div class="pk"><b>cairn</b><span>일정과 세션 이력을 남기는 복구 원장</span></div>
-<div class="pk"><b>auto</b><span>기준선에서 목표까지 스스로 도는 실험 루프</span></div>
-<div class="pk"><b>headroom</b><span>에이전트 컨텍스트를 줄여 주는 압축 프록시</span></div>
-<div class="pk"><b>ctx-burn</b><span>컨텍스트가 어디서 새는지 재는 감사기</span></div>
-<div class="pk"><b>ctx-plan</b><span>세션 수와 구독 장수를 셈하는 산정기</span></div>
-<div class="pk"><b>termaid</b><span>Mermaid 다이어그램을 터미널에 그리기</span></div>
-<div class="pk"><b>nanoclaw</b><span>멀티 에이전트 플랫폼 — 격리 실행</span></div>
-<div class="pk"><b>obsidian-cli</b><span>Obsidian 볼트를 명령줄로 조회 · 작성</span></div>
-<div class="pk"><b>notebooklm</b><span>소스 기반 질의응답 · 리서치</span></div>
-<div class="pk"><b>yt-transcribe</b><span>YouTube 영상을 글로 옮기고 요약</span></div>
-<div class="pk"><b>tts-say</b><span>글을 음성으로 — 통합 TTS</span></div>
-<div class="pk"><b>imsg</b><span>iMessage · SMS 조회와 전송(macOS)</span></div>
+<div class="box"><div class="ico">🔗</div><b>Tailscale</b><span>휴대폰과 맥을 한 사설 네트워크에 놓습니다.</span></div>
+<div class="box"><div class="ico">🚪</div><b>Termius</b><span>SSH 앱입니다. 휴대폰에서 맥으로 들어가는 문입니다.</span></div>
+<div class="box"><div class="ico">🧱</div><b>tmux</b><span>연결이 끊겨도 세션을 살려 둡니다.</span></div>
+<div class="box"><div class="ico">👆</div><b>tmuxc + tmm</b><span><code>tmuxc</code> 로 세션을 엽니다. <code>tmm</code> 으로 엄지로 고릅니다.</span></div>
 </div>
 
-<h2 id="install">설치</h2>
-<p>리포: <a href="https://github.com/yoonhwan/aifp">github.com/yoonhwan/aifp</a></p>
-<p>tmuxc 와 tmm 을 한 줄로 설치하시려면 아래를 터미널에 붙여 넣으시면 됩니다.</p>
-<div class="codewrap"><button type="button" class="copy" data-copy="inst">복사</button><div class="term" id="inst">git clone https://github.com/yoonhwan/aifp.git &amp;&amp; cd aifp &amp;&amp; bash feature-pack/tmuxc/install.sh &amp;&amp; bash feature-pack/tmm/install.sh</div></div>
-<ul class="small">
-<li>필요한 것: macOS · bash 4 이상 · git · tmux · fzf(tmm 용).</li>
-<li>에이전트에게 맡기셔도 됩니다. 리포를 받은 뒤 «<code>feature-pack/tmm/INSTALL.md</code> 읽고 설치해 주세요» 라고 말씀하시면 됩니다.</li>
-<li>다른 팩도 같은 꼴입니다. 팩 폴더의 <code>README.md</code> 와 <code>INSTALL.md</code> 에서 시작하시면 됩니다.</li>
-</ul>
+<h2>하루는 이렇게</h2>
+<ol class="steps">
+<li><div class="ico">🖥️</div><div><b>맥에서: 세션을 엽니다</b><span><code>tmuxc open ~/work/my-app --name my-app --agent claude</code></span></div></li>
+<li><div class="ico">🚶</div><div><b>밖으로 나갑니다</b><span>맥은 켜 둡니다. 에이전트는 tmux 안에서 계속 일합니다.</span></div></li>
+<li><div class="ico">📱</div><div><b>휴대폰에서: <code>tmm</code> 을 칩니다</b><span>Termius 를 열고 맥에 접속해 <code>tmm</code> 을 칩니다. 나를 기다리는 세션이 맨 위에 옵니다.</span></div></li>
+<li><div class="ico">💬</div><div><b>답하고 휴대폰을 넣습니다</b><span>고르고, 한 줄 보내면 끝입니다.</span></div></li>
+</ol>
+<div class="term" tabindex="0" aria-label="tmm 화면">seat&gt;                          1/4
+<span class="w">▶ ● pay-fix   HUMAN    2m</span>
+  ● tests     <span class="b">BUSY </span>    6m
+  ● guide     <span class="b">BUSY </span>    8m
+  ● notes     <span class="d">IDLE </span>   37m
+<span class="d">──────────────────────────────────</span>
+⏺ 변경 3건을 올렸습니다. 배포해도 될까요?</div>
+<p class="small"><code>tmm</code> 화면 예시입니다. <code>HUMAN</code> = 나를 기다림 · <code>BUSY</code> = 일하는 중 · <code>IDLE</code> = 쉬는 중.</p>
 
-<h2 id="security">보안 점검</h2>
-<div class="card sec">
-<p>이 리포는 비공개 작업 리포에서 내보낸 사본입니다. 내보낼 때마다 파일 전체를 58종 패턴(키 · 토큰 · 주소 · 식별자)으로 검사하고, 검토한 허용 목록 밖에 남은 것이 없을 때만 내보냅니다.</p>
-<p><span class="zero">0건</span> — 바로 쓸 수 있는 키 · 토큰 · 비밀번호 · 개인 키는 찾지 못했습니다.</p>
-<ul>
-<li><b>키 꼴로 보이는 글자</b>는 있지만 모두 시험용 가짜 값이거나 설치 문서의 자리표시입니다.</li>
-<li><b>내부 기록과 식별자</b>는 뺐습니다. 내부 운영 기록은 사본에 넣지 않았고, 개인 · 조직 식별자는 자리표시로 바꿨습니다.</li>
-<li><b>점검의 한계</b>도 말씀드립니다. 전용 비밀 검색 도구가 아니라 패턴 검색으로 본 결과입니다.</li>
-</ul>
-<p class="small">설치하실 때에는 본인의 키와 토큰을 리포 폴더 안의 파일에 적지 않으시기를 권해 드립니다.</p>
+<h2>aifp 는 무엇인가요?</h2>
+<div class="pic aifp">
+<svg viewBox="0 0 150 124" role="img" aria-label="aifp 라고 적힌 상자와 그 위의 블록 세 개">
+<rect x="26" y="20" width="30" height="30" rx="6" fill="var(--acc)"/>
+<rect x="60" y="8" width="30" height="30" rx="6" fill="var(--warn)"/>
+<rect x="94" y="22" width="28" height="28" rx="6" fill="var(--sub)"/>
+<rect x="18" y="52" width="114" height="64" rx="10" fill="var(--accbg)" stroke="var(--acc)" stroke-width="3"/>
+<text x="75" y="92" text-anchor="middle" font-size="24" font-weight="700">aifp</text>
+</svg>
+<div>
+<p><b>AI Feature Pack</b> 은 AI 코딩 에이전트를 위한 작은 도구(팩) 상자입니다.</p>
+<p>필요한 팩만 꺼내 쓰면 됩니다. 팩마다 따로 설치됩니다.</p>
+<p class="small">Claude Code · Codex · Pi · OpenCode · OpenClaw 용입니다. <code>tmuxc</code> 와 <code>tmm</code> 도 그 팩입니다.</p>
+<a class="btn" href="https://github.com/yoonhwan/aifp">GitHub 에서 팩 전체 보기 →</a>
+</div>
 </div>
 
-<footer>AI Feature Pack 소개 · 화면과 이름은 설명을 위한 예시입니다.</footer>
+<h2>시작하기</h2>
+<ol class="todo">
+<li>맥과 휴대폰에 <b>Tailscale</b> 을 설치합니다.</li>
+<li>맥에서 <b>원격 로그인</b>(SSH)을 켜고, 휴대폰에 <b>Termius</b> 를 설치합니다.</li>
+<li>맥 터미널에 아래를 붙여 넣습니다:</li>
+</ol>
+<div class="term" tabindex="0" aria-label="설치 명령">git clone https://github.com/yoonhwan/aifp.git &amp;&amp; cd aifp \
+  &amp;&amp; bash feature-pack/tmuxc/install.sh \
+  &amp;&amp; bash feature-pack/tmm/install.sh</div>
+<p class="small">필요한 것: macOS · bash 4 이상 · git · tmux · fzf(<code>tmm</code> 용).</p>
+
+<footer>AI Feature Pack · 화면과 이름은 설명을 위한 예시입니다.</footer>
 </main>
-<script>
-(function(){
-  function fallback(text){
-    var ta=document.createElement('textarea');ta.value=text;ta.setAttribute('readonly','');
-    ta.style.position='fixed';ta.style.top='-1000px';document.body.appendChild(ta);ta.select();
-    var ok=false;try{ok=document.execCommand('copy');}catch(e){}
-    document.body.removeChild(ta);return ok;
-  }
-  [].slice.call(document.querySelectorAll('.copy')).forEach(function(btn){
-    var label=btn.textContent;
-    btn.addEventListener('click',function(){
-      var text=document.getElementById(btn.getAttribute('data-copy')).textContent;
-      function done(ok){
-        btn.textContent=ok?'복사됨':'복사 실패 — 직접 골라 복사해 주세요';btn.classList.toggle('done',ok);
-        setTimeout(function(){btn.textContent=label;btn.classList.remove('done');},1800);
-      }
-      if(navigator.clipboard&&window.isSecureContext){navigator.clipboard.writeText(text).then(function(){done(true);},function(){done(fallback(text));});}
-      else{done(fallback(text));}
-    });
-  });
-})();
-</script>
 </body>
 </html>

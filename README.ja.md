@@ -15,11 +15,19 @@ Claude Code · Codex · Pi · OpenCode · OpenClaw
 
 ---
 
+## 📱 スマホから作業する
+
+エージェントは Mac で動き続け、スマホはその窓です。
+
+- **Tailscale** がスマホと Mac を同じプライベートネットワークに置き、**Termius**(SSH)で中に入ります。
+- **tmux** が切断後もセッションを生かします。**`tmuxc`** でセッションを開き、**`tmm`** で親指で選びます。
+
+**→ 公式ガイド: [スマホから作業する方法](https://yoonhwan.github.io/aifp/)**(英語 · [韓国語](https://yoonhwan.github.io/aifp/ko.html))
+
 ## このリポジトリについて
 
 - AI コーディングエージェント向けの**フィーチャーパック**集です。1 パック = [`feature-pack/`](feature-pack/) 配下の 1 フォルダ。パック同士は独立しているので、必要なものだけ入れてください。
 - 各パックには**エージェントが読む** `INSTALL.md` があります。エージェントに渡すと、前提条件の確認、CLI のインストール、スキル登録、動作確認まで進めます。
-- 初めての方は図解ガイドからどうぞ: **[スマホから自分の AI エージェントを使う方法](https://yoonhwan.github.io/aifp/)**(英語 · [韓国語](https://yoonhwan.github.io/aifp/ko.html))。
 
 ## 🚀 クイックスタート
 

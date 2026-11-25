@@ -15,11 +15,19 @@ Claude Code · Codex · Pi · OpenCode · OpenClaw
 
 ---
 
+## 📱 用手机工作
+
+智能体在你的 Mac 上持续运行,手机只是一扇窗。
+
+- **Tailscale** 把手机和 Mac 放进同一个私有网络,再用 **Termius**(SSH)进入。
+- **tmux** 在断开连接后保持会话存活。用 **`tmuxc`** 打开会话,用 **`tmm`** 以拇指选择。
+
+**→ 官方指南:[用手机工作](https://yoonhwan.github.io/aifp/)**(英文 · [韩文](https://yoonhwan.github.io/aifp/ko.html))
+
 ## 这是什么?
 
 - 面向 AI 编程智能体的**功能包**合集。一个包 = [`feature-pack/`](feature-pack/) 下的一个文件夹。各包相互独立,只装需要的即可。
 - 每个包都带有**写给智能体看的** `INSTALL.md`。把它交给你的智能体,它会检查前置条件、安装 CLI、注册技能并验证结果。
-- 第一次来?先看图解指南:**[用手机操作你的 AI 智能体](https://yoonhwan.github.io/aifp/)**(英文 · [韩文](https://yoonhwan.github.io/aifp/ko.html))。
 
 ## 🚀 快速开始
 
