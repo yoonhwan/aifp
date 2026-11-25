@@ -139,4 +139,4 @@ feature-pack/{name}/
 
 ## 许可证
 
-MIT
+[MIT](LICENSE)

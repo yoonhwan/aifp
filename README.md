@@ -139,4 +139,4 @@ Not every pack has every file; five packs (`ctx-plan`, `fable-team`, `headroom`,
 
 ## License
 
-MIT
+[MIT](LICENSE)

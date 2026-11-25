@@ -139,4 +139,4 @@ feature-pack/{name}/
 
 ## ライセンス
 
-MIT
+[MIT](LICENSE)
