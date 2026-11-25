@@ -1,59 +1,150 @@
-# 📓 Feature Pack: NotebookLM
+<div align="center">
 
-Google NotebookLM을 터미널에서 제어하는 CLI + OpenClaw 스킬 패키지.
+# notebooklm
 
-## 할 수 있는 것
+**The `nlm` CLI and an OpenClaw skill package for controlling Google NotebookLM from the terminal.**
 
-- 🔍 **소스 기반 Q&A** — 업로드한 문서에서만 답변 (할루시네이션 제로)
-- 🎙️ **오디오 팟캐스트** — 문서 기반 AI 팟캐스트 자동 생성
-- 🎬 **비디오 오버뷰** — 요약 비디오 생성
-- 📊 **리포트/퀴즈/플래시카드** — 학습 자료 자동 생성
-- 🌐 **딥 리서치** — 웹 소스 자동 수집 & 분석
-- 🗂️ **노트북 관리** — 생성/삭제/공유/별칭
-- 📎 **Obsidian 연동** — 볼트 문서를 NotebookLM 소스로 활용
+[English](README.md) · [한국어](README.ko.md) · [日本語](README.ja.md) · [简体中文](README.zh-CN.md)
 
-## 빠른 시작
+</div>
+
+> Part of [AI Feature Pack](../../README.md) — packs are independent; install only what you need.
+
+## What it does
+
+- Source-based Q&A: answers come only from the documents you uploaded.
+- Generates audio podcasts and video overviews from your documents.
+- Generates study material such as reports, quizzes and flashcards.
+- Deep research collects and analyzes web sources automatically.
+- Manages notebooks: create, delete, share and alias them.
+- Uses documents from an Obsidian vault as NotebookLM sources.
+
+## Quick start
 
 ```bash
-# 1. 설치
+# 1. Install
 uv tool install notebooklm-mcp-cli
 
-# 2. 인증
+# 2. Authenticate (Chrome opens)
 nlm login
 
-# 3. 사용
+# 3. Use
 nlm notebook list
-nlm query notebook <id> "질문"
+nlm query notebook <notebook_id> "your question"
 ```
 
-## 설치
+## Install
 
-OpenClaw 에이전트에게 `INSTALL.md`를 전달하세요:
-> "INSTALL.md 읽고 설치해줘"
+Ask your agent: "Read feature-pack/notebooklm/INSTALL.md and install it". To install by hand, follow [INSTALL.md](INSTALL.md):
 
-## 구조
+1. Install the `nlm` CLI with `uv` (`notebooklm-mcp-cli`).
+2. Sign in to your Google account with `nlm login` and check with `nlm auth status`. A session lasts about 20 minutes; run `nlm login` again when it expires.
+3. Copy this pack's `skill/` folder into the skills folder of your OpenClaw workspace.
+4. Add a NotebookLM section to the workspace `TOOLS.md` (the content is in [INSTALL.md](INSTALL.md)).
+5. Optional: set up the Obsidian integration.
+6. Check that it works with `nlm --version`, `nlm auth status` and `nlm notebook list`.
 
+```bash
+# Install uv if you do not have it
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Install the CLI and check it
+uv tool install notebooklm-mcp-cli
+nlm --version
+
+# If nlm is not found, add ~/.local/bin to PATH
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+
+# Copy the skill (default OpenClaw workspace: ~/.openclaw/workspace)
+cp -r skill/ ~/.openclaw/workspace/skills/notebooklm
+
+# Update
+uv tool upgrade notebooklm-mcp-cli
 ```
-notebooklm/
-├── INSTALL.md        ← 에이전트용 설치 프롬프트
-├── README.md         ← 이 파일
-├── manifest.json     ← 메타데이터
-├── skill/            ← OpenClaw 스킬
-│   ├── SKILL.md      ← 스킬 정의
-│   └── references/   ← 확장 문서
-├── cli/              ← CLI 설치 가이드
-│   └── install.md
-├── config/           ← OpenClaw 설정 조각
-│   └── tools-section.md
-├── obsidian/         ← Obsidian 연동 가이드
-│   └── setup.md
-└── test/             ← 검증
-    └── verify.md
+
+## Usage
+
+### Main commands
+
+```bash
+# Notebooks
+nlm notebook list
+nlm notebook create "Name"
+nlm notebook get <notebook_id>
+nlm notebook describe <notebook_id>
+
+# Sources
+nlm source add <notebook_id> --file <path>
+nlm source add <notebook_id> --url <url>
+nlm source add <notebook_id> --text "content" --title "Title"
+
+# Q&A
+nlm query notebook <notebook_id> "your question"
+
+# Generate
+nlm audio create <notebook_id> --confirm
+nlm video create <notebook_id> --confirm
+nlm report create <notebook_id> --confirm
+nlm quiz create <notebook_id> --confirm
+nlm flashcards create <notebook_id> --confirm
+nlm mindmap create <notebook_id> --confirm
+nlm slides create <notebook_id> --confirm
+
+# Research
+nlm research start <notebook_id> "topic" --mode deep
+nlm research status <notebook_id>
+
+# Download
+nlm download audio <notebook_id> <artifact_id> -o <path>
+
+# Aliases (short names instead of UUIDs)
+nlm alias set myproject <notebook_id>
+nlm alias list
 ```
 
-## 요구사항
+### Q&A from an agent
 
-- macOS (Apple Silicon / Intel)
+- An agent always asks with `nlm query notebook`, one question and one answer at a time.
+- Do not use `nlm chat start` (REPL mode); an agent cannot control it.
+- Run `nlm --ai` for a guide to all commands.
+
+### Obsidian integration
+
+This works by uploading files through the CLI, not through a plugin.
+
+```bash
+# Create a dedicated notebook and give it an alias
+nlm notebook create "My Obsidian Vault"
+nlm alias set vault <notebook_id>
+
+# Upload a document as a source
+nlm source add vault --file "<path-to-vault>/note.md" --wait
+
+# Ask a question
+nlm query notebook vault "Explain the project structure"
+```
+
+### Troubleshooting
+
+| Symptom | Fix |
+|---------|-----|
+| `nlm: command not found` | Add `~/.local/bin` to PATH |
+| `uv: command not found` | Install uv |
+| "Cookies have expired" / "authentication may have expired" | Run `nlm login` again |
+| Chrome does not open | Install Chrome (`brew install --cask google-chrome`) |
+| Rate limit error | It retries 3 times automatically. If it keeps failing, wait a while |
+| Adding a source fails | Check that the file is within the NotebookLM source size limit |
+
+## Requirements
+
+- macOS (Apple Silicon or Intel)
 - Python 3.10+
-- Google 계정
-- Chrome 브라우저
+- A Google account (with NotebookLM access)
+- Chrome browser (used for authentication)
+- uv (the install step installs it if missing)
+
+## Links
+
+- [INSTALL.md](INSTALL.md) — installation guide
+- [Obsidian integration guide](obsidian/setup.md)
+- [AI Feature Pack catalog](../../README.md)

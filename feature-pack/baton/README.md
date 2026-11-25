@@ -1,359 +1,176 @@
-# 🪃 baton
+<div align="center">
 
-> **멀티 에이전트 시대의 무중단 컨텍스트 인계 표준** — 워크트리·아카이브·작업 메모리를 한 그릇에. Claude Code / Codex / Gemini / OpenCode / Hermes 어디서 시작했든 다음 도구가 그대로 이어 작업합니다.
->
-> tmux 통합으로 세션 끊김 0. 어떤 에이전트든 워크트리 tmux 세션 attach해서 즉시 이어 작업.
+# baton
 
----
+**Keeps worktrees, working memory and archives in one place, so any agent can pick up the work where the last one stopped**
 
-## 🤔 왜 baton?
+[English](README.md) · [한국어](README.ko.md) · [日本語](README.ja.md) · [简体中文](README.zh-CN.md)
 
-**친구들아, 멀티 에이전트로 작업하면서 이런 거 안 겪어봤어?**
+</div>
 
-- 🌅 아침에 **Claude Code**로 plan 짜고 → 점심에 **Codex**로 구현 → 저녁에 **Gemini**로 검증
-  → 그런데 **각 도구가 어제 뭘 했는지 모름**. 매번 처음부터 설명...
-- 💀 main에서 워크트리 까먹고 작업 → 충돌 폭탄 → 한참 후 정리하다 archive 부재로 **결정 이력 통째로 손실**
-- 🔄 어떤 phase는 호흡이 길어서 plan/work/review를 N번 돌려야 하는데
-  → **세션 끝나면 사라짐**. 다음 세션이 어디서부터 이어야 할지 모름
-- 🤖 **에이전트 N개를 멀티로 돌리려면** 각자 같은 컨텍스트를 봐야 하는데, 표준이 없으면 **N×M 어댑터 지옥**
+> Part of [AI Feature Pack](../../README.md) — packs are independent; install only what you need.
 
-baton은 이걸 한 줄에 해결합니다:
+## What it does
 
-> **모든 도구가 같은 그릇(`.baton/handoff/`)에 결과를 누적한다. 그릇 포맷은 SPEC.md 4룰로 표준화. 어느 도구든 그릇만 읽으면 즉시 인계.**
+- Claude Code, Codex, Gemini, OpenCode and Hermes all write their results to one shared place, `.baton/handoff/` (`PLAN.md` · `JOURNAL.md` · `CURRENT.md` · `NEXT.md`). The next session, with any agent, reads it and continues.
+- Creates and cleans up worktrees. On create it assigns ports, makes symlinks and sets up memory; on finish it stores the work in the archive.
+- The archive is tracked by git. After a push, other machines can search past decisions. Old archives are pruned on a 30-day basis.
+- With `BATON_TMUX_ENABLE=true`, each worktree gets its own tmux session. The session survives a closed laptop, and another agent or a phone over SSH can attach and continue.
+- On the main / master root it refuses plan, save, resume and finish. Phases live only inside worktrees.
+- It does not do the work itself (plan interviews, coding, review, tests). That goes to an external harness (superpowers, OMX, OMC and others); baton only collects the results.
 
-다중 에이전트 = 다중 도구 = 다중 세션. 표준이 없으면 컨텍스트가 매번 새로 시작. baton이 있으면 **그릇 하나로 무중단**.
+## Quick start
 
----
-
-## 🎬 한 그림으로 보는 baton
-
-```
-                   ┌──────────────────────────────────┐
-                   │   .baton/handoff/  (표준 그릇)   │
-                   │  PLAN / JOURNAL / CURRENT / NEXT │
-                   └────────────┬─────────────────────┘
-                                ↑ 표준 포맷 (SPEC.md 4룰)
-                  ┌─────────────┼─────────────┐
-                  ↓             ↓             ↓
-            ┌──────────┐   ┌─────────┐   ┌──────────┐
-            │ Claude   │   │  Codex  │   │  Gemini  │
-            │  Code    │   │   CLI   │   │   CLI    │
-            └──────────┘   └─────────┘   └──────────┘
-            (plan 작성)    (구현 실행)    (검증)
-                  ↓             ↓             ↓
-                  └─────────────┴─────────────┘
-                                ↓
-                       ┌──────────────────┐
-                       │  archive/        │
-                       │  git-tracked     │  ← 완료 시 자동 압축 (30일)
-                       │  머신 간 sync    │     전체 검색 가능
-                       └──────────────────┘
-
-세 에이전트가 같은 phase를 이어 작업.
-baton은 매번 "이전에 뭘 했나" 컨텍스트를 알아서 챙겨줌.
-```
-
----
-
-## 🖥️ tmux 통합 — 세션 영속 + 멀티 에이전트 동시 작업
-
-`export BATON_TMUX_ENABLE=true` 한 줄로 활성화.
-
-```
-$ /baton:wt-create v5-pr-a4
-✓ 워크트리 생성: .worktrees/v5-pr-a4
-  Branch: feat/v5-pr-a4
-  Ports: GATEWAY=8090 / WEB=3011 / MOBILE=3012
-✓ tmux 세션 생성: baton-biz-agents-v5-pr-a4
-  접속:        tmux attach -t baton-biz-agents-v5-pr-a4
-  📱 모바일 SSH: ssh you@100.x.x.x  → tmux a -t baton-biz-agents-v5-pr-a4
-```
-
-> 📱 **모바일 SSH 안내는 Tailscale 설치 시 자동.** baton이 `tailscale ip -4` 결과 + `$USER` 로 한 줄 생성. 핸드폰 Termius/Blink/JuiceSSH 앱에서 그대로 복붙해 attach 가능.
-
-세션 안에서:
-- baton은 `BATON_AGENT`가 없으면 `CODEX_*`/`OMX_SESSION_ID`로 Codex, `CLAUDE_*`로 Claude를 감지합니다. 명시하려면 `BATON_AGENT=codex` 또는 `BATON_AGENT=claude-code`를 설정합니다.
-- 사용자가 직접 작업 (vim, claude code, codex exec 등)
-- 또는 다른 에이전트가 attach해서 자율 진행
-- 세션 종료 안 함 → 노트북 닫아도 백그라운드 유지
-
-### 📱 모바일 attach 시나리오 (Tailscale)
-
-```
-[집 노트북: macOS]                    [외출: 핸드폰]
-  baton-biz-v5-pr-a4 세션 활성   ←──  Termius/Blink ssh user@100.x.x.x
-  Claude/Codex/superpowers 진행                ↓
-                                      tmux a -t baton-biz-v5-pr-a4
-                                                ↓
-                                      그대로 작업 모니터링·명령 추가
-```
-
-준비:
 ```bash
-sudo tailscale set --ssh           # macOS Tailscale SSH 활성 (한 번)
-sudo systemsetup -setremotelogin on  # SSH 활성
-sudo pmset -c sleep 0              # 전원 연결 시 슬립 OFF
+git clone https://github.com/yoonhwan/aifp
+bash aifp/feature-pack/baton/install.sh   # interactive install
+export BATON_TMUX_ENABLE=true             # optional — one tmux session per worktree
+
+# inside your agent — on the main root
+/baton:wt-create my-task
+cd .worktrees/my-task
+
+# inside the worktree
+/baton:plan my-task     # optional — large tasks only
+# ... work with an external harness ...
+/baton:save             # save the handoff when you stop
+/baton:finish           # phase done
+/baton:wt-clean         # clean up + archive
 ```
 
-→ baton이 `wt-create` / `plan` / `save` / `resume` / `finish` 출력에 자동으로 모바일 SSH 명령 한 줄 표시.
+In the next session, any agent can enter that worktree and call `/baton:resume`, or just say `go` / `continue`; it reads `NEXT.md` and carries on.
 
-`/baton:status` 출력에 tmux 정보 포함:
-```
-활성 워크트리:
-  - v5-pr-a4 (feat/v5-pr-a4) (tmux: baton-biz-v5-pr-a4 — attach: tmux a -t baton-biz-v5-pr-a4)
-```
+## Install
 
----
+### Let your agent do it
 
-## ✨ 핵심 플로우
+Tell your agent: "Read `feature-pack/baton/INSTALL.md` and install it." Install time is about 3 minutes.
 
-```
-[main 루트에서]
-/baton:wt-create v5-pr-a3   ─→  워크트리 + 포트 + 심링 (옵션 B 가드)
-cd .worktrees/v5-pr-a3
+### Manual install
 
-[워크트리 안에서]
-/baton:plan v5-pr-a3        ─→  PLAN.md (선택, 큰 작업만)
-                                  ↓
-                       외부 하네스 (superpowers / OMX·Codex / OMC·Claude / ...)
-                                  ↓
-                       매 turn 자동 → JOURNAL.md
-                       (UserPromptSubmit + PostToolUse 훅)
-                                  ↓
-/baton:save                 ─→  CURRENT.md status=paused, NEXT.md 갱신
-
-[다음 세션 — 어떤 에이전트든]
-"이어서" / "go" / "continue"
-/baton:resume               ─→  NEXT.md 자동 출력, 작업 재개
-
-[완료]
-/baton:finish               ─→  status=done
-/baton:wt-clean             ─→  archive 자동 보관 + 30일 prune
+```bash
+bash feature-pack/baton/install.sh        # interactive install
+export PATH="$HOME/.baton/current/bin:$PATH"   # add to ~/.zshrc or ~/.bashrc
+~/.baton/current/bin/baton doctor         # verify
+bash feature-pack/baton/uninstall.sh      # remove
 ```
 
-작업의 **앞(시작)** 과 **뒤(완료)** 만 baton이 관리. **중간(plan/code/review)** 은 외부 하네스에 위임. baton은 표준 파일 위치를 강제해서 어느 도구가 와도 그릇을 읽고 이어갑니다.
+What `install.sh` does:
 
----
+1. Detects installed agents (Claude Code · Gemini CLI · OpenCode · Hermes).
+2. Copies core to `~/.baton/versions/<version>/` and links `~/.baton/current` (several versions can coexist).
+3. Registers baton with each agent.
 
-## 🎯 책임 경계
+| Agent | What gets registered |
+|---|---|
+| Claude Code | commands in `~/.claude/commands/baton/` · link `~/.claude/skills/baton/SKILL.md` · hooks in `~/.claude/settings.json` |
+| Gemini CLI | TOML in `~/.gemini/commands/baton/` · hooks in `~/.gemini/settings.json` |
+| OpenCode | `~/.config/opencode/commands/baton/` · plugins |
+| Hermes | `~/.hermes/plugins/baton.py` |
+| Codex · OpenClaw | prints manual setup steps |
 
-| ✅ baton이 하는 것 | ❌ baton이 안 하는 것 |
-|--------------------|----------------------|
-| 워크트리 생성·정리·아카이브 | LLM 작업 실행 |
-| 포트 할당·반환·심볼릭 링크 | plan 인터뷰·코딩·리뷰·테스트 |
-| `PLAN/JOURNAL/CURRENT/NEXT.md` 메모리 관리 | 검증·문서화 |
-| 외부 하네스 invocation 가이드 | 백엔드 매핑 |
+4. Asks which baton task to attach to which hook (the recommended set can be chosen automatically).
 
----
+`settings.json` is backed up to `settings.json.baton-backup` before merging. Uninstall keeps the `.baton/` folders inside your projects (that is your data); delete them by hand.
 
-## 📂 디렉토리 한눈에
+## Usage
 
-### 글로벌 (multi-version)
+### Commands
+
+| Command | What it does |
+|---|---|
+| `/baton:wt-create <name>` | worktree + ports + symlinks + memory setup |
+| `/baton:plan <id>` | phase plan (`PLAN.md` · `phase.json`) — inside a worktree only |
+| `/baton:save` | save the handoff now (`CURRENT.md` set to paused, `NEXT.md` updated) |
+| `/baton:resume` | print `NEXT.md` and continue |
+| `/baton:finish` | phase done + suggests wt-clean |
+| `/baton:wt-clean [path] [--merged]` | clean up the worktree + archive |
+| `/baton:status` | phase + active worktrees (with tmux sessions) |
+| `/baton:hotfix-mode [finish]` | hotfix directly on main (lite mode · memory off) |
+| `/baton:digest <topic>` | compress context from several sessions into one file |
+| `/baton:migrate [--dry-run] [path]` | move an existing worktree to the sidecar layout |
+| `/baton:help` | print the flow as an ASCII diagram |
+| `/baton:install` · `/baton:doctor` · `/baton:upgrade` | install · diagnose · install a new version |
+| `/baton:archive list` | archives from the last 30 days |
+| `/baton:archive search <query> [--global]` | search metadata + content |
+| `/baton:archive show <id>` | details |
+| `/baton:archive extract <id>` · `close <id>` | unpack to a temp folder · remove that folder |
+| `/baton:archive prune [--dry-run] [--days N]` | remove expired archives |
+
+### Main branch guard
+
+On the main / master root only `wt-create`, `archive list/search`, `status` and `hotfix-mode` work. `plan`, `save`, `resume` and `finish` are refused. Main stays clean and phases live only in worktrees.
+
+### tmux and phone attach
+
+With `BATON_TMUX_ENABLE=true`, `wt-create` makes a tmux session and shows the `tmux attach -t <session>` command. If Tailscale is installed it also prints a one-line SSH command built from `tailscale ip -4` and `$USER`; paste it into a phone app such as Termius or Blink. The agent in a session is set by `BATON_AGENT`; without it, `CODEX_*` / `OMX_SESSION_ID` means Codex and `CLAUDE_*` means Claude. macOS setup (once):
+
+```bash
+sudo tailscale set --ssh             # turn on Tailscale SSH
+sudo systemsetup -setremotelogin on  # turn on SSH
+sudo pmset -c sleep 0                # no sleep while on power
+```
+
+### Claude Code hooks
+
+| Hook | What baton does |
+|---|---|
+| SessionStart | paused notice + environment check + archive prune |
+| UserPromptSubmit | append the user's input to `JOURNAL.md` right away |
+| PostToolUse | record external harness use in `JOURNAL.md` |
+| PreCompact | ask for a backup dump |
+| SessionEnd | ask for a backup dump |
+
+### External harnesses
+
+`/baton:plan` lists the harnesses you can use. baton adds instructions so that planning results (`/superpowers:writing-plans`, `$plan`, `/oh-my-claudecode:plan` and so on) go to `PLAN.md`, and execution results (`/superpowers:executing-plans`, `$autopilot`, `/oh-my-claudecode:autopilot` and so on) go to `JOURNAL.md`. There is no catalog file; matching is by name. Change the recommendation with `harnesses.preferred_plan` in `config.json`.
+
+### File layout
+
 ```
 ~/.baton/
-├── versions/1.0.0/{bin,lib,templates,SPEC.md,...}
-└── current → versions/1.0.0/
-```
+├── versions/<version>/      # bin · lib · templates · SPEC.md
+└── current -> versions/<version>/
 
-### 프로젝트 (워크트리마다)
-```
-{project}/.baton/
-├── config.json          # commit O
-├── version.lock         # commit O
-└── archive/             # commit O (자동 sync)
+<project>/.baton/
+├── config.json              # commit
+├── version.lock             # commit
+└── archive/                 # commit (synced between machines)
 
-{worktree}/.baton/
-├── config.json          # 프로젝트 상속
-├── phase.json           # commit O
-├── handoff/             # gitignore
-│   ├── PLAN.md
-│   ├── JOURNAL.md
-│   ├── CURRENT.md
-│   └── NEXT.md
+<worktree>/.baton/
+├── config.json              # inherits project settings
+├── phase.json               # commit
+├── handoff/                 # gitignore — PLAN · JOURNAL · CURRENT · NEXT
 └── session.lock
 ```
 
----
+### Flow cases
 
-## 🚀 빠른 시작
+| Case | Situation |
+|---|---|
+| [plan-first](flows/plan-first.md) | long task — start with a plan |
+| [wt-first](flows/wt-first.md) | light task — worktree right away |
+| [wt-finish](flows/wt-finish.md) | finish one task |
+| [branch-pivot](flows/branch-pivot.md) | clean up after splitting into several branches |
+| [abandoned](flows/abandoned.md) | give up a phase |
+| [hotfix-mode](flows/hotfix-mode.md) | hotfix directly on main |
+| [orphan-recovery](flows/orphan-recovery.md) | recover a damaged `.baton/` |
+| [handoff-rollback](flows/handoff-rollback.md) | restore a damaged `handoff/` from the archive |
 
-```bash
-# 1. 설치 (인터뷰형 — 어느 에이전트에 어떤 훅 등록할지 묻습니다)
-git clone https://github.com/yoonhwan/aifp
-bash aifp/feature-pack/baton/install.sh
+## Requirements
 
-# 1.5. tmux 활성화 (선택, 권장)
-export BATON_TMUX_ENABLE=true   # ~/.zshrc 또는 ~/.bashrc 에 추가
+- OS: macOS · Linux
+- Required: `bash` 4+ · `git` 2.30+ · `jq` 1.6+ · `tar`
+- Optional: `ripgrep` · `gh` · tmux (`BATON_TMUX_ENABLE`) · Tailscale (phone attach)
+- API keys / accounts: none
 
-# 2. 현재 에이전트에서 (옵션 B: main에서는 wt-create만 가능)
+## Links
 
-# [main 루트에서] 워크트리 + 포트 + 심링 + phase.json stub 자동 생성
-/baton:wt-create v5-pr-a3
-cd .worktrees/v5-pr-a3
-
-# [워크트리 안에서] phase 기획 (선택 — 큰 작업만)
-/baton:plan v5-pr-a3                       # PLAN.md 채우기 (deep-interview 등 호출)
-
-# 작업: 외부 하네스로
-# Codex/OMX 런타임: $autopilot "..."
-# Claude/OMC 런타임: /oh-my-claudecode:autopilot "..."
-
-# 완료
-/baton:finish                              # 페이즈 완료
-/baton:wt-clean                            # 정리 + archive 자동 보관
-```
-
-> ⚠️ `/baton:plan`은 **워크트리 안에서만** 호출 가능. main/master root에서는 옵션 B 가드로 거부됩니다.
-
-다음 세션 (다른 에이전트도 OK):
-```bash
-$ cd .worktrees/v5-pr-a3
-$ codex     # 또는 gemini, opencode, hermes
-> /baton:resume     # NEXT.md 컨텍스트 자동 로드
-> 이어서             # 또는 "진행", "go", "continue", "next"
-```
-
----
-
-## 📚 플로우 케이스 — 자세한 시나리오는 별도 문서
-
-| 케이스 | 시나리오 | 문서 |
-|--------|----------|------|
-| **A. plan-first** | 호흡 긴 작업 — plan부터 정석 | [flows/plan-first.md](flows/plan-first.md) |
-| **B. wt-first** | 가벼운 작업 — 워크트리만 즉시 | [flows/wt-first.md](flows/wt-first.md) |
-| **C. wt-finish** | 단일 종료 | [flows/wt-finish.md](flows/wt-finish.md) |
-| **D. branch-pivot** | 다중 브랜치 분기 후 정리 | [flows/branch-pivot.md](flows/branch-pivot.md) |
-| **E. abandoned** | phase 포기 처리 | [flows/abandoned.md](flows/abandoned.md) |
-| **F. hotfix-mode** | main에서 직접 hotfix | [flows/hotfix-mode.md](flows/hotfix-mode.md) |
-| **G. orphan-recovery** | .baton/ 손상 복구 | [flows/orphan-recovery.md](flows/orphan-recovery.md) |
-| **H. handoff-rollback** | handoff/ 손상 시 archive 복원 | [flows/handoff-rollback.md](flows/handoff-rollback.md) |
-
-플로우 인덱스: [flows/_index.md](flows/_index.md)
-
----
-
-## 🤝 멀티 에이전트 동시 작업 — 크루 워크플로우
-
-```
-[사용자 main]                                  [엑스클로우 크루 / 다른 머신]
-  │                                              │
-  /baton:wt-create A                             git pull
-  /baton:wt-create B                             /baton:archive search "..."
-  /baton:wt-create C                             ← 이전 결정 즉시 조회
-  │                                              │
-  ┌─── tmux 세션 3개 (BATON_TMUX_ENABLE=true) ──┐
-  │  baton-biz-A  baton-biz-B  baton-biz-C      │
-  │   ↓            ↓            ↓                │
-  │  Claude Opus  Codex CLI    Gemini CLI        │
-  │   in A         in B         in C             │
-  └──────────────────────────────────────────────┘
-        │            │            │
-        └────────────┴────────────┘
-                     ↓
-          .baton/archive/INDEX.jsonl  ← git-tracked
-          (3건 자동 누적)
-                     ↓
-          git push
-                     ↓
-          [크루: git pull → /baton:archive search]
-```
-
-핵심: archive는 git-tracked. push만 하면 크루 모두 ".이전에 비슷한 거 했나?"를 즉시 조회 가능.
-
----
-
-## 🔌 외부 하네스 어댑터
-
-`/baton:plan` 호출 시 사용 가능한 하네스 후보 출력. 사용자 선택(첫 3회) 또는 `config.preferred_plan` 자동.
-
-| 하네스 (최신 슬래시) | 역할 | 결과 누적 위치 |
-|---------------------|------|----------------|
-| `/superpowers:brainstorming` | 아이디어 발굴 | `PLAN.md` |
-| `/superpowers:writing-plans` | plan 작성 | `PLAN.md` |
-| `/superpowers:executing-plans` | plan 실행 | `JOURNAL.md` |
-| Codex/OMX `$plan`, `$ralplan` | 전략·합의 계획 | `PLAN.md` |
-| Codex/OMX `$deep-interview` | Socratic 인터뷰 | `PLAN.md` |
-| Codex/OMX `$autopilot`, `$ralph` | 자율 실행 | `JOURNAL.md` |
-| Codex/OMX `$team`, `$ultrawork` | 다중 에이전트 | `JOURNAL.md` |
-| Claude/OMC `/oh-my-claudecode:plan` | 전략 계획 | `PLAN.md` |
-| Claude/OMC `/oh-my-claudecode:deep-interview` | Socratic 인터뷰 | `PLAN.md` |
-| Claude/OMC `/oh-my-claudecode:autopilot` | 자율 실행 | `JOURNAL.md` |
-| Claude/OMC `/oh-my-claudecode:team` | 다중 에이전트 | `JOURNAL.md` |
-| `/claude-mem:mem-search` | 과거 메모리 검색 | (조회만) |
-| `/claude-mem:make-plan` | phased 계획 생성 | `PLAN.md` |
-| `/claude-mem:do` | phased 실행 | `JOURNAL.md` |
-
-> ⚠️ **Deprecated 슬래시 사용 금지** (제거 예정):
-> `superpowers:write-plan`, `superpowers:execute-plan`, `superpowers:brainstorm` → 위 표의 최신 슬래시 사용
->
-> baton의 추천 출력도 위 최신 슬래시만 표시합니다.
-
-→ baton은 **표준 instruction을 동적 주입**합니다 (yaml 카탈로그 없음). 신규 하네스는 그냥 호출하면 baton이 이름 매칭으로 PLAN.md/JOURNAL.md에 결과 누적 지시. 추천은 `config.json`의 `harnesses.preferred_plan` 값으로 변경 가능.
-
----
-
-## 🪝 훅 (Claude Code 5개)
-
-| 훅 | baton 작업 |
-|----|----|
-| **SessionStart** | paused 알림 + 환경 검증 + archive lazy prune |
-| **UserPromptSubmit** | 사용자 입력을 JOURNAL.md INTENT 섹션에 즉시 append |
-| **PostToolUse** | 하네스 사용 자동 추출 → JOURNAL.md HARNESS 섹션 + invocation 검증 |
-| **PreCompact** | 백업 dump 지시 (UserPromptSubmit 누락 안전망) |
-| **SessionEnd** | 백업 dump 지시 |
-
-> Claude Code의 Stop은 모델 컨텍스트 미주입이라 사용 안 함 (안전한 PreCompact + UserPromptSubmit 조합)
-
----
-
-## 🛡️ 옵션 B — main/root strict
-
-**main / master 브랜치 root**에서:
-- ❌ `baton plan` 거부 (워크트리에서만)
-- ❌ `baton save / resume / finish` 거부
-- ✅ `baton wt-create` (워크트리 생성)
-- ✅ `baton archive list/search` (조회)
-- ✅ `baton status` (활성 워크트리 목록)
-- ✅ `baton hotfix-mode` (main 직접 작업, lite mode)
-
-→ main 오염 0, 단일 진실(phase는 워크트리에만 산다).
-
----
-
-## 📐 핵심 명령 (전체 17개)
-
-| 명령 | 역할 |
-|------|------|
-| `/baton:plan <id>` | phase.json 빈 stub (워크트리에서만) |
-| `/baton:wt-create <name>` | 워크트리 + 포트 + 심링 + 메모리 초기화 |
-| `/baton:save` | 핸드오프 즉시 dump |
-| `/baton:resume` | NEXT.md 출력 (키워드: 이어서/진행/go/continue/next) |
-| `/baton:finish` | 페이즈 완료 + wt-clean 제안 |
-| `/baton:wt-clean [path?] [--merged]` | 워크트리 정리 + archive 자동 |
-| `/baton:status` | phase + 활성 워크트리 |
-| `/baton:help` | ASCII 시퀀스 |
-| `/baton:install` | 인터뷰형 설치 |
-| `/baton:doctor` | 진단 |
-| `/baton:upgrade` | 새 버전 설치 (multi-version) |
-| `/baton:archive list` | 최근 30일 |
-| `/baton:archive search <query> [--global]` | 메타 + 내용 검색 |
-| `/baton:archive show <id>` | 상세 |
-| `/baton:archive extract <id>` | 임시 폴더로 압축 해제 |
-| `/baton:archive close <id>` | 임시 폴더 정리 |
-| `/baton:archive prune [--dry-run] [--days N]` | 만료 정리 (자동 + 수동) |
-
----
-
-## 📋 Interop Contract
-
-다른 에이전트와 호환하려면 [SPEC.md](core/SPEC.md) 의 4룰만 준수:
-1. 4-template 핸드오프 포맷
-2. phase.json 스키마
-3. 워크트리 위치 + 옵션 B
-4. 포트 할당 룰
-
----
-
-## 📜 라이선스
-
-MIT
+- [INSTALL.md](INSTALL.md) — install guide for agents
+- [core/SPEC.md](core/SPEC.md) — the 4 rules other agents follow (4-file handoff format · `phase.json` schema · worktree location and main guard · port assignment)
+- [flows/_index.md](flows/_index.md) — the 8 flow cases
+- [docs/MULTI_AGENT_SCENARIOS.md](docs/MULTI_AGENT_SCENARIOS.md) — several agents at once
+- Adapters: [Codex](adapters/codex/INSTRUCTIONS.md) · [Gemini](adapters/gemini/INSTRUCTIONS.md) · [OpenCode](adapters/opencode/INSTRUCTIONS.md) · [Hermes](adapters/hermes/INSTALL.md)
+- [cairn](../cairn/README.md) — companion pack: ledger for schedules and return points
+- [AI Feature Pack catalog](../../README.md)
+- License: MIT

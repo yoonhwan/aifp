@@ -1,106 +1,111 @@
-# Feature Pack: ctx-plan
+<div align="center">
 
-감당량 축. **계정 구성 → 정원·피크 세션·골 처리량**을 계산하고, 0순위 고정상수(구독 장수·주간 리밋)를
-점검하고, 목표 규모에서 **필요 구독 장수**를 역산한다.
+# ctx-plan
 
-짝 도구는 `ctx-burn` 이다. `ctx-burn` = «쓴 양» 측정 · `ctx-plan` = «감당량» 시뮬.
-둘은 **JSON 계약 하나(`ctx.v1`)로만** 붙는다. `ctx-plan` 은 세션 로그도, 실 HOME 도 읽지 않는다.
+**A capacity tool that turns an account mix into seats · peak sessions · goal throughput, and works back to how many subscriptions a target scale needs**
 
-Claude Opus 5.5 — 구독 요금제 vs API 비용 (하루 기준) 표 = docs/plan-cost-table.md
+[English](README.md) · [한국어](README.ko.md) · [日本語](README.ja.md) · [简体中文](README.zh-CN.md)
+
+</div>
+
+> Part of [AI Feature Pack](../../README.md) — packs are independent; install only what you need.
+
+## What it does
+
+- Where the sibling tool `ctx-burn` measures "what was used", `ctx-plan` simulates "what you can carry". The two connect **only through one JSON contract (`ctx.v1`)**.
+- `--capacity`: from an account mix (`--accounts 5x:N,ultra:N`) prints the pool table · 4 simulation rows · 2 goal-model rows.
+- `--inventory`: checks the 19 priority-0 fixed constants (subscription counts · weekly limits and more) and prints "N priority-0 problems" · the required-accounts estimate · baseline A.
+- `--need K:N`: works back from a target scale (concurrent sessions · sessions · teams · concurrent goals) to the Ultra / 5x subscriptions needed.
+- `--scales`: recomputes with a list of waste-reduction multipliers.
+- Reads no session logs and not your real HOME. Input is the `ctx-burn --json` output and one constants file only · no writes · no network.
 
 ## Quick start
 
 ```bash
+git clone https://github.com/yoonhwan/aifp.git
 cd aifp/feature-pack/ctx-plan
-bash install.sh                 # ~/.local/bin/ctx-plan
+bash install.sh                                 # ~/.local/bin/ctx-plan
 
-cp accounts.env.example /tmp/accounts.env      # 상수 파일 자리는 하네스/사람이 정한다 · 값은 머신마다 채운다
-ctx-burn --hours 168 --json > /tmp/burn.json
+cp accounts.env.example /tmp/accounts.env       # constants file — fill the values per machine
+ctx-burn --hours 168 --json > /tmp/burn.json    # needs the ctx-burn pack
 
-CTX_PLAN_CAP_FILE=/tmp/accounts.env ctx-plan --from /tmp/burn.json --inventory   # 0순위 상수 점검 + 크리티컬
+CTX_PLAN_CAP_FILE=/tmp/accounts.env ctx-plan --from /tmp/burn.json --inventory   # priority-0 constants check
 ctx-plan --from /tmp/burn.json --inv-file /tmp/accounts.env --capacity --accounts 5x:5,ultra:5
 ctx-plan --from /tmp/burn.json --inv-file /tmp/accounts.env --need concurrent:40
 ```
 
-`ctx-sim` alias 는 **폐기**했다(오빠 #278951 — alias 는 `ctx-waste` → `ctx-burn` 하나만).
+## Install
 
-## Modes
+### Let your agent install it
 
-| mode | 무엇을 내나 |
+This pack has no `INSTALL.md`. Tell your agent "Read feature-pack/ctx-plan/README.md and install it" and it can follow the manual steps below. A person fills in the constants file values.
+
+### Manual install
+
+`install.sh` creates one symlink, `~/.local/bin/ctx-plan`. It does not pick a place for the constants file — the caller passes it with `--inv-file` or `CTX_PLAN_CAP_FILE`.
+
+```bash
+bash install.sh                                 # ~/.local/bin/ctx-plan
+CTX_PLAN_BIN_DIR="$HOME/bin" bash install.sh    # change the install folder
+cp accounts.env.example /path/to/accounts.env   # sample — values are empty; unfilled values stop with a "priority-0 problem"
+bash uninstall.sh                               # remove — deletes the symlink only
+```
+
+## Usage
+
+### Modes
+
+| mode | prints |
 |---|---|
-| (없음) | 머리 3줄 — 계약·축 정의·상수 파일 경로 + pool 한 줄 |
-| `--inventory` | 0순위 상수 19키 점검 · «0순위 문제 N건» · 골 모형 2행(동시골·골/주·유휴/부족 팀) · 요구 계정 역산 · 기준선 A |
-| `--capacity` | pool 표(pool 있는 것만) · 시뮬 4행 · 골 모형 2행 |
-| `--need K:N` | `concurrent:N` · `sessions:N` · `teams:N` · `goals:N`(동시 골 N개) → 필요 Ultra/5x 장수 · goals 는 요구 계정 블록도 낸다 · N > `FT_GOAL_PARALLEL_MAX` 면 깎지 않고 알림 1줄(rc0) |
-| `--scales 1.0,0.9,…` | 낭비 감소 배율 목록(기본 4값 = 실측·-10%·-20%·-30%) |
+| (none) | 3 header lines — contract · axis definition · constants file path + one pool line |
+| `--inventory` | 19 priority-0 constants checked · "N priority-0 problems" · 2 goal-model rows (concurrent goals · goals/week · idle/short teams) · required-accounts estimate · baseline A |
+| `--capacity` | pool table (only pools that exist) · 4 simulation rows · 2 goal-model rows |
+| `--need K:N` | `concurrent:N` · `sessions:N` · `teams:N` · `goals:N` (N concurrent goals) → Ultra / 5x subscriptions needed · `goals` also prints the required-accounts block · if N exceeds `FT_GOAL_PARALLEL_MAX` it is not cut, one notice line is printed (rc 0) |
+| `--scales 1.0,0.9,…` | waste-reduction multipliers (default 4 values = measured · -10% · -20% · -30%) |
 
-## Options
+### Options
 
 | option | default | meaning |
 |---|---|---|
-| `--from FILE\|-` | stdin | `ctx-burn --json` 출력 |
-| `--inv-file FILE` | (아래 순서) | 고정상수 파일 |
-| `--accounts 5x:N,ultra:N` | 없음 | `--capacity` 정원·피크 계산용 계정 구성 |
-| `--wk-5x N` / `--wk-ultra N` | 630 / 2520 | 주간 리밋 앵커(가중 M) — 파일 값이 있으면 파일이 이긴다 |
-| `--c5h-5x N` | 60 | 5x 5시간창 앵커 |
-| `--target-util F` | 0.85 | 주간 목표 사용률(운영정책) |
-| `--seats-per-team N` | 4 | 팀 하나 = 세션 몇 석 |
-| `--hours-per-week N` | 40 | 세션 하나의 주당 시간 |
-| `--teams-per-goal N` | 3 | 한 골에 동시 투입되는 팀 수 |
-| `--team-hours-per-goal N` | 8 | 골 하나에서 팀 하나가 붙어 있는 시간 |
+| `--from FILE\|-` | stdin | `ctx-burn --json` output |
+| `--inv-file FILE` | (order below) | fixed constants file |
+| `--accounts 5x:N,ultra:N` | none | account mix for the `--capacity` seat · peak calculation |
+| `--wk-5x N` / `--wk-ultra N` | 630 / 2520 | weekly limit anchors (weighted M) — a value in the file wins |
+| `--c5h-5x N` | 60 | 5x 5-hour window anchor |
+| `--target-util F` | 0.85 | weekly target utilization (operating policy) |
+| `--seats-per-team N` | 4 | sessions per team |
+| `--hours-per-week N` | 40 | hours per week of one session |
+| `--teams-per-goal N` | 3 | teams working one goal at the same time |
+| `--team-hours-per-goal N` | 8 | hours one team stays on one goal |
 
-## 축 정의 (출력 머리에 매번 찍는다)
+### Constants file
 
-```
-골 = 최대 3개 동시(오빠 11-10) · 한 골 = 팀 3 동시 × 8시간 = 24 팀-시간 = 96 세션-시간 · 골/주 = min(가용 세션-시간 ÷ 96, 3 × 168 ÷ 8)
-```
+There are only two places it looks: ① `--inv-file FILE` ② `$CTX_PLAN_CAP_FILE`. It does not search parent folders or assume a path in your home. With no file it prints no table and ends with rc 3 + one line that points to `--inv-file` · `CTX_PLAN_CAP_FILE` · `install.sh`.
 
-참고 모형 1개다(r1567 · 오빠 #278942). 숫자는 상수(`FT_GOAL_PARALLEL_MAX` · `FT_GOAL_TEAMS` · `FT_GOAL_TEAM_HOURS` · `FT_CAP_SEATS_PER_TEAM`)에서 채운다.
-`동시골` = min(동시팀 ÷ 팀/골, G) **주 평균** · `골/주` = min(팀시간 ÷ 골 팀-시간, G × 168 ÷ H) 모형 산출량이라 `동시골 × 168÷H` 와 다를 수 있다.
-실제 골 병렬·팀 배정은 팀이 정한다. 값을 넘어도 거부·축소 0, 알림만 낸다.
-기준선 A(`FT_BASE_*` 5키)는 상시 팀 = 팀당 1석 × 168h, 이슈·골 팀 = 낮 시간 × 7일 × 세션/팀으로 센다.
-`팀-시간/주` 는 중간 단위이므로 성과 판정에 쓰지 않는다.
+- The output header prints the path it read. 19 keys = subscriptions 5 · weekly limits 4 (upper · lower) · model 5 (including the concurrent-goal reference) · baseline 5.
+- An empty value is a "priority-0 problem" and is **not replaced by a default** — tables that need it print "cannot compute".
+- Only two knobs that are not contract keys (`FT_CAP_C5H_5X` · `FT_CAP_HOURS_PER_WEEK`) use defaults, and the screen says "default (not a contract key)".
+- Sample = [`accounts.env.example`](accounts.env.example) (values are empty).
 
-## 상수 파일 (0순위) — 이 패키지는 자리를 정하지 않는다
+### Goal model (reference)
 
-**해석 순서 = 두 개뿐** (느슨한 연결 · 수용 기준 #2):
+- One goal = 3 teams at once × 8 hours = 24 team-hours = 96 session-hours · up to 3 concurrent goals · goals/week = min(available session-hours ÷ 96, 3 × 168 ÷ 8).
+- The numbers come from constants (`FT_GOAL_PARALLEL_MAX` · `FT_GOAL_TEAMS` · `FT_GOAL_TEAM_HOURS` · `FT_CAP_SEATS_PER_TEAM`).
+- It is a calculation example, not an operating rule, and the output carries a "reference — not an operating rule" label. Going over a value is never refused or cut; it only prints a notice.
+- Baseline A (`FT_BASE_*`, 5 keys) counts always-on teams as 1 seat per team × 168h, and issue · goal teams as daytime hours × 7 days × sessions per team. `team-hours/week` is an intermediate unit and is not used to judge results.
 
-1. `--inv-file FILE`
-2. `$CTX_PLAN_CAP_FILE`
+### Rules it keeps
 
-상위 폴더를 뒤지거나 홈의 특정 경로를 가정하지 않는다. **자리는 하네스가 정하고 env 로 주입한다.**
-파일이 없으면 `ctx-plan` 은 아무 표도 내지 않고 **rc3 + 1줄**로 끝난다(수용 기준 #6):
+- **One place for lower bounds** — `FT_CAP_WK_5X_LOW` · `FT_CAP_WK_ULTRA_LOW`. No stand-in math such as "upper ÷ 3"; empty means "cannot compute".
+- **Labels are "low-capacity assumption · high-capacity assumption"** — never "optimistic · conservative" (a small capacity is not guaranteed to be the conservative one).
+- **Anchors carry a status** (unverified · estimate · needs measuring · operating policy and so on). Do not make account decisions on a number while its status mark is still there.
+- **Contract check** — if `plan_input.schema` is not `ctx.v1`, it does not compute and stops with rc 2 + one reason line.
+- **Model constants resolved in one place** — order is `CLI flag > constants file`; a contract key with neither is "cannot compute". The source (`CLI` · `file` · `none` · `default (not a contract key)`) is printed in the header.
+- **0 samples = not computed** — never filled with 0. rc stays 0.
 
-```
-ctx-plan: 상수 파일 없음 — --inv-file 또는 CTX_PLAN_CAP_FILE (install.sh 참고)
-```
+### Input contract (ctx.v1)
 
-출력 머리에 **읽은 경로 1줄**을 찍는다. 키 19개 — 구독 5 · 주간 리밋 4(상한·하한) · 모형 5(동시 골 참고값 포함) · 기준선 5.
-값이 비면 «0순위 문제» 이고 **기본값으로 대체하지 않는다**(수용 기준 #7 — 계산이 필요한 표는 «산정 불가»).
-계약 키가 아닌 두 손잡이(`FT_CAP_C5H_5X` · `FT_CAP_HOURS_PER_WEEK`)만 기본값을 쓰고, 화면에 «기본값(계약 키 아님)» 이라고 적는다.
-
-견본: [`accounts.env.example`](accounts.env.example) (값은 비어 있다).
-
-## 지켜지는 규칙
-
-- **하한은 한 곳에서만** — `FT_CAP_WK_5X_LOW` · `FT_CAP_WK_ULTRA_LOW`. «상한 ÷ 3» 같은 대체 계산을 하지 않는다.
-  비어 있으면 계산하지 않고 «산정 불가» 라고 쓴다(`docs/rules/no_silent_fallback.md`).
-- **라벨은 «낮은 용량 가정 · 높은 용량 가정»** — «낙관·보수» 를 쓰지 않는다(작은 용량이 보수라는 보장이 없다).
-- **앵커에는 상태가 붙는다** — `미검증·추정` · `추정(5x×4)·실측 필요` · `실측 주장·출처 미확인` · `운영정책`.
-  상태 표기가 지워지기 전에는 이 숫자로 계정 결정을 내리지 않는다.
-- **느슨한 연결** — `ctx-burn` 을 실행하지 않고(subprocess 0), 하네스 폴더 이름·홈 경로를 모른다.
-  입력은 계약 JSON 하나와 상수 파일 하나뿐이다(수용 기준 #1·#3).
-- **계약 검사** — `plan_input.schema != ctx.v1` 이면 계산하지 않고 **rc2** + 사유 1줄로 멈춘다(경고 후 진행 0).
-- **모형 상수는 한 함수에서만 해석** — `params()` 하나가 `CLI 명시 > 상수 파일` 을 정하고, 계약 키는
-  둘 다 없으면 **None(산정 불가)** 이다(기본값 대체 0 · 수용 기준 #7). 머리(header)·capacity·inventory·need
-  가 같은 값을 본다(R2 · DA #278950). 출처(`CLI`/`파일`/`없음`/`기본값(계약 키 아님)`)를 머리에 찍는다.
-- **골 모형은 «참고»** — 고정 기본값(팀 3 · 8h)을 운영 규칙으로 읽지 않게 «참고 — 운영 규칙 아님» 라벨을 붙인다
-  (오빠 #278942). 규칙이 아니라 계산 예시다.
-- **표본 0 = 미산정** — 0 으로 채우지 않는다. rc 는 0.
-
-## 입력 계약 (ctx.v1)
-
-`ctx-burn --json` 의 `plan_input`:
+`plan_input` from `ctx-burn --json`:
 
 ```json
 {"schema": "ctx.v1", "window_hours": 168,
@@ -113,22 +118,25 @@ ctx-plan: 상수 파일 없음 — --inv-file 또는 CTX_PLAN_CAP_FILE (install.
  "rate_claude": null}
 ```
 
-**단위 (R1 · DA #278950):** 계약의 `rate_claude` 는 **가중 토큰 / 세션-시간**이다.
-계산 예산(M = 백만 가중 토큰)과 섞으면 100만 배가 어긋나므로, 이 도구는 `main()` 의
-`rate_tok / TOKENS_PER_M` **한 줄에서만** 단위를 바꾼다. `--once` 없음 · `units` 필드는 계약이
-스스로 단위를 말하게 하는 표식이다.
+- `rate_claude` = the **median weighted tokens per session-hour** of the claude pool (sample = sessions with 20+ requests). There is exactly one line that converts it to the compute budget (M = million weighted tokens). The `units` field lets the contract state its own units.
+- `usage0` = weight-0 records (API errors), left out of the request-rate denominator. The `unknown` pool = unknown model and is never merged into another pool.
 
-`rate_claude` = claude pool 의 **세션-시간당 W 중앙값**(가중 토큰). 표본 조건 = 요청 20건 이상 세션.
-`usage0` = 가중 0 레코드(API 오류)로, 요청률 분모에서 빠진다. `unknown` pool = 모델 미상 —
-다른 pool 에 밀어 넣지 않는다.
+### Safety
 
-## Safety
-
-- 읽는 것: `--from` JSON 하나 · 상수 파일 하나. 그 밖 0.
-- 쓰기 0 · 네트워크 0 · 세션 로그 직접 읽기 0.
-- 상수 파일은 **읽기만** 한다(`--set` 없음). 값은 사람이 채운다.
+- Reads: one `--from` JSON · one constants file. Nothing else.
+- No writes · no network · no direct session log reads · does not run `ctx-burn` (no subprocess).
+- The constants file is **read only** (no `--set`). A person fills in the values.
 
 ## Requirements
 
-- python3 (3.8+), 표준 라이브러리만
+- python3 3.8+ · standard library only
 - macOS · Linux
+- Input: `ctx-burn --json` output (the [ctx-burn](../ctx-burn/README.md) pack)
+- A filled constants file (copied from `accounts.env.example`) · no API key · no network
+
+## Links
+
+- [accounts.env.example](accounts.env.example) — constants file sample (values are empty)
+- [docs/plan-cost-table.md](docs/plan-cost-table.md) — Claude Opus 5.5 subscription plans vs API cost (per day) table, in Korean
+- [ctx-burn](../ctx-burn/README.md) — the sibling tool that emits `ctx.v1` (measures usage)
+- [AI Feature Pack catalog](../../README.md)

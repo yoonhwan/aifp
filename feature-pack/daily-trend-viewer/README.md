@@ -1,47 +1,97 @@
-# 데일리 트렌드 뷰어
+<div align="center">
 
-유튜브 인기 동영상·쇼츠·인스타 릴스와 AI 영상 소식을 카테고리별 × 조회수순으로 매일 확인하는 로컬 웹사이트입니다.
-API 키 없이 동작하며, 외부 패키지 설치도 필요 없습니다(파이썬 표준 라이브러리만 사용).
+# daily-trend-viewer
 
-## 출처
+**A local website that shows popular YouTube, Shorts, Instagram Reels, X, Threads and TikTok content plus AI video news on one screen — no API key and no extra packages.**
 
-원본 배포: https://www.threads.com/@xazinga/post/DadL9WQD9ex
+[English](README.md) · [한국어](README.ko.md) · [日本語](README.ja.md) · [简体中文](README.zh-CN.md)
 
-## 실행 방법
+</div>
+
+> Part of [AI Feature Pack](../../README.md) — packs are independent; install only what you need.
+
+## What it does
+
+- Filters popular YouTube videos and Shorts by category × period (today · this week · this month) and sorts them by views or likes. Click a card to play it in a popup.
+- Searches YouTube for any keyword from the search box in the header and sorts the results by views.
+- The AI video tab shows new and trending video-generation models (Hugging Face) and AI video news from Korea and abroad (Google News RSS).
+- The Reels, X, Threads and TikTok tabs collect the latest posts of the accounts you follow. You add and remove accounts on screen.
+- Results are cached for 1 hour. The refresh button at the top right updates them at once.
+- Uses only the Python standard library. The server listens on `127.0.0.1` only.
+
+## Quick start
 
 ```bash
-python3 ~/trend-viewer/server.py
+# from the repo root
+cd feature-pack/daily-trend-viewer/app
+python3 server.py
+# open http://localhost:28088 in your browser · stop with Ctrl+C
 ```
 
-브라우저에서 **http://localhost:28088** 접속
+## Install
 
-## 기능
+To let your agent do it, say "Read `feature-pack/daily-trend-viewer/INSTALL.md` and install it".
 
-- **유튜브 / 쇼츠 탭**: 카테고리(전체·**AI**·먹방·뷰티·브이로그·예능·영화/드라마·테크·지식·여행·동물) × 기간(오늘/이번 주/이번 달) 필터, **접이식 정렬 메뉴로 조회수순/좋아요순 전환**(좋아요는 영상마다 서버가 조회해 보강), 카드 클릭 시 팝업 재생
-- **🤖 AI 영상 탭**: 새로 나온 영상 생성 모델 + 트렌딩 모델(Hugging Face 실시간)과 국내·해외 AI 영상 뉴스(구글 뉴스 RSS)만 표시(글 중심). 인기 AI 영상은 유튜브 탭의 'AI' 카테고리로 통합
-- **🔍 검색창**(헤더): 유튜브를 임의 키워드로 검색해 조회수순으로 표시. 검색 시 영상 탭으로 전환되며, 카테고리 클릭으로 검색 해제
-- **📸 릴스 탭**: 인스타그램 웹 내부 API(무인증)로 구독 계정들의 최신 릴스를 수집. **접이식 정렬 메뉴로 조회수순/좋아요순/댓글순 전환**(전부 실데이터, 즉시 재정렬). 계정은 화면에서 추가/삭제 (`reels_accounts.json`에 저장). 기본 계정: OpenAI·Runway·Pika·Luma·Midjourney·Kling·HeyGen·Higgsfield·DeepMind
-- **𝕏 트위터 탭**: 트위터 임베드용 공개 API(무인증)로 구독 계정들의 최신 트윗을 참여수와 함께 수집. **접이식 정렬 메뉴**로 좋아요·댓글·리트윗순 전환(조회수는 이 API에 없어 정렬 옵션에서 제외). 계정 추가/삭제 가능(`x_accounts.json`). 기본 계정: OpenAI·Runway·Kling·DeepMind·Midjourney·Luma·Pika·HeyGen·ElevenLabs·Meta AI
-- **🧵 스레드 탭**: 인스타그램(메타) 백엔드로 로그인 없이 실시간 조회를 시도. 메타가 조회를 막은 경우(현재 기본 상태) 각 계정 바로가기로 자동 폴백. 접이식 정렬 메뉴(좋아요·댓글·리포스트순) 제공, 계정 관리 가능(`threads_accounts.json`)
-- **🎵 틱톡 탭**: tikwm 무료 공개 API로 **실시간 인기 피드(한국)+구독 계정 최신 영상**을 조회수·좋아요·댓글까지 수집. **접이식 정렬 메뉴로 조회수순/좋아요순/댓글순 전환**. 계정 추가/삭제(`tiktok_accounts.json`). 기본 계정: openai·runwayapp·krea.ai·elevenlabs·sora·zachking·khaby.lame·google
-- **캐시**: 결과는 1시간 캐시되며, 우측 상단 새로고침 버튼으로 즉시 갱신 가능
+Manual steps: you only need Python 3.8 or later. The `app/` folder is the whole app, so you can copy it anywhere or run it where it is. If port 28088 is already in use, change `PORT = 28088` at the top of `app/server.py` to a free port.
 
-## 참고 사항
+```bash
+# macOS: double-click app/실행-Mac.command (if Gatekeeper warns, right-click → Open), or
+cd app && python3 server.py
+# Windows: double-click app\실행-Windows.bat
+# check — 200 means it works
+curl -s -o /dev/null -w "%{http_code}" http://localhost:28088/
+```
 
-- 유튜브 데이터는 내부 검색 API(InnerTube)를 조회수순 정렬로 호출해 가져옵니다. 유튜브의 공개 인기 급상승 피드는 2025년에 폐지되어 검색 기반으로 구성했습니다.
-- 인스타 릴스는 instagram.com 웹이 쓰는 내부 API(`web_profile_info` + 공개 앱 ID 헤더)를 무인증으로 호출합니다. 계정당 최근 12개 게시물이 한도이며, 요청이 잦으면 인스타그램이 일시적으로 제한할 수 있습니다(캐시로 완화). 썸네일은 CDN 핫링크 차단을 피해 서버 프록시(`/api/img`)로 전달합니다.
-- X(트위터)는 임베드 위젯이 쓰는 syndication API(`syndication.twitter.com/srv/timeline-profile/...`)를 무인증으로 호출해 좋아요·댓글·리트윗까지 가져옵니다. 조회수(impressions)는 이 API에 없어(항상 0) 정렬 옵션에서 조회수순 자체를 제외했습니다.
-- 스레드는 GraphQL 엔드포인트가 로그인 없이 응답하지만, 프로필 글 쿼리의 `doc_id`가 수시로 바뀌고 초기 HTML/JS 번들에 없어(헤드리스 브라우저로만 추출 가능) 안정적 조회가 어렵습니다. `server.py`의 `THREADS_DOC_IDS`에 유효한 doc_id를 넣으면 즉시 실시간 조회가 동작하며, 그렇지 않으면 계정 바로가기로 폴백합니다.
-- 틱톡은 자체 웹/모바일 API가 서명(X-Bogus·msToken)과 TLS 지문 검사를 요구해 직접 무인증 호출이 막힙니다. 대신 **tikwm 무료 공개 API**(`www.tikwm.com/api`)가 서명을 대신 처리해 조회수·좋아요·댓글·썸네일·영상URL을 반환합니다. 무료 티어라 동시성이 높으면 일시 제한될 수 있어 서버는 낮은 동시성(3)으로 호출하고 1시간 캐시합니다. 썸네일(tiktokcdn)은 서버 이미지 프록시(`/api/img`, 메모리 캐시)로 전달합니다.
+## Usage
 
-## ⚠️ 알아두세요 (보안·운영 고지)
+### Tabs
 
-- **서드파티 의존 (tikwm.com)**: 틱톡 데이터는 비공식 무료 프록시 **tikwm.com**을
-  경유합니다. 틱톡 관련 요청(계정 핸들, 조회 내역)이 이 제3자 서비스로 전송되며,
-  해당 서비스의 가용성·정책 변경에 따라 틱톡 탭이 언제든 중단될 수 있습니다.
-- **비공식 API (ToS 회색지대)**: 유튜브·인스타그램·X·스레드·틱톡 데이터는 모두
-  각 플랫폼의 비공식/무인증 내부 API를 사용합니다. 각 서비스 약관상 회색지대이며,
-  플랫폼 측 변경·차단으로 예고 없이 동작이 멈출 수 있습니다. 개인적 열람 용도로만
-  사용하고, 과도한 새로고침은 피하세요 (기본 1시간 캐시).
-- 이 피처팩의 `server.py`에는 원본 대비 보안 패치 2건(계정 변경 POST의 Origin 검증,
-  이미지 프록시 호스트 검사 강화)이 적용되어 있습니다.
+| Tab | What you see | Sort by |
+|---|---|---|
+| YouTube / Shorts | Category (All · AI · mukbang · beauty · vlog · entertainment · movies/dramas · tech · knowledge · travel · animals) × period | views · likes |
+| AI video | New video-generation models · trending models · AI video news (mostly text) | — |
+| Reels | Latest Reels of the accounts you follow | views · likes · comments |
+| X | Latest posts of the accounts you follow | likes · replies · retweets |
+| Threads | Latest posts of the accounts you follow (account links when blocked) | likes · replies · reposts |
+| TikTok | Live popular feed (Korea) + latest videos of the accounts you follow | views · likes · comments |
+
+Popular AI videos are in the "AI" category of the YouTube tab. A search switches to the video tab; clicking a category clears the search.
+
+### Account lists
+
+When you change accounts on screen, these files are created in `app/`. Copy them too when you back up or move the app.
+
+| Tab | File |
+|---|---|
+| Reels | `reels_accounts.json` |
+| X | `x_accounts.json` |
+| Threads | `threads_accounts.json` |
+| TikTok | `tiktok_accounts.json` |
+
+### Data sources and limits
+
+- YouTube: calls the internal search API (InnerTube) sorted by views. YouTube's public trending feed was removed in 2025, so the app is built on search.
+- Reels: calls the internal API used by the instagram.com website without login. Up to the latest 12 posts per account. Instagram may block for a while if requests come too often. Thumbnails go through the server proxy (`/api/img`).
+- X: calls the syndication API used by the embed widget without login. This API has no view counts, so there is no sort by views.
+- Threads: blocked by default for now, so it falls back to account links. Put a valid doc_id in `THREADS_DOC_IDS` in `server.py` to get live results.
+- TikTok: goes through tikwm, a free public API (`www.tikwm.com/api`). Because it is a free tier, the server calls it with low concurrency (3) and caches for 1 hour.
+
+### Good to know
+
+- TikTok requests (account handles · what you look up) are sent to tikwm.com, a third-party service. If that service changes, the TikTok tab can stop at any time.
+- All platform data comes from unofficial, unauthenticated internal APIs. This is a gray area under each service's terms and can be blocked without notice. Use it for personal viewing only and avoid refreshing too often.
+- The `server.py` in this pack has 2 security patches over the original: Origin check on the account-change POST, and a stricter host check in the image proxy.
+
+## Requirements
+
+- macOS or Windows
+- Python 3.8 or later (standard library only · no extra packages)
+- API keys / accounts: none
+- Install time: under 1 minute
+
+## Links
+
+- [INSTALL.md](INSTALL.md)
+- [test/verify.md](test/verify.md) — detailed checks
+- [Original release post](https://www.threads.com/@xazinga/post/DadL9WQD9ex)
+- [AI Feature Pack catalog](../../README.md)

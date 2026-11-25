@@ -1,105 +1,149 @@
-# 🔀 agent-cli
+<div align="center">
 
-**AI 코딩 에이전트 CLI 툴킷 — 설치·비교 + 비대화 위임 하네스**
+# agent-cli
 
-AI 코딩 에이전트 CLI(Claude Code · Codex · Gemini · OpenCode · Cursor Agent · Pi)의 **설치·인증·비교**부터, 현재 세션 안에서 **다른 모델을 비대화로 소환→자율주행→resume**으로 이어가는 **위임 하네스**까지 한 팩으로 제공한다. 페르소나(**DA**·designer·architect)를 주입해 즉시 역할을 부여한다.
+**An install-and-compare guide for AI coding agent CLIs, plus a delegation harness that hands work to another model non-interactively.**
 
-> v2.0 — 기존 `agent-cli`(설치·비교 가이드)에 `cross-cli`의 실행 하네스(스크립트·페르소나·안전·oh-my/baton/tmuxc 연계)를 통합하고, 2026-06 실증으로 4건 오류를 정정.
+[English](README.md) · [한국어](README.ko.md) · [日本語](README.ja.md) · [简体中文](README.zh-CN.md)
 
-## 왜 쓰나
+</div>
 
-- **author ↔ review 분리** — 내가/한 모델이 짠 걸 *다른 모델*이 적대검증(DA)
-- **프로바이더 무관 위임** — 같은 작업을 codex/gemini/claude에 던져 cross-check
-- **세션 영속성** — 비대화로도 다회 Q&A·HIL·점진 결정 (`resume`)
-- **설치·비교·Trust 가이드** — 어떤 CLI를 어떻게 깔고 래핑할지
-- **상위 하네스**(선택, 로컬 설치 시) — oh-my-\*(ulw/ultraplan), baton, tmuxc. **미설치면 무시** — 핵심 기능(비대화 위임·페르소나·resume)은 이들 없이도 동작
+> Part of [AI Feature Pack](../../README.md) — packs are independent; install only what you need.
 
-## 6종 지원 (2026-06 실증 + Pi 추가)
+## What it does
 
-| CLI | 비대화 | 자동주행 | resume |
+- Guides you through installing, authenticating and comparing six agent CLIs: Claude Code, Codex, Gemini, OpenCode, Cursor Agent and Pi.
+- From your current session, calls another model non-interactively, lets it run autonomously, and continues the same session with `resume`.
+- Injects a persona (DA, designer or architect) so the delegated model gets a role right away.
+- Has a different model check, adversarially, what one model produced (author and review stay separate).
+- Sends the same task to several providers so you can cross-check the results.
+- Can link to higher-level harnesses such as oh-my-\*, baton and tmuxc (optional). They are ignored when not installed; non-interactive delegation, personas and resume work without them.
+
+## Quick start
+
+```bash
+# from the repository root: check your OS and which CLIs you can use now
+bash feature-pack/agent-cli/scripts/detect-env.sh
+# after installing the skill (see Install): ask codex to review with the DA persona, then follow up
+bash ~/.claude/skills/agent-cli/scripts/resume_chain.sh codex DA "Review this diff adversarially" "Rank the findings by priority"
+```
+
+## Install
+
+### Install with an agent
+
+Ask your agent:
+
+```text
+Read feature-pack/agent-cli/INSTALL.md and install it
+```
+
+### Manual install
+
+```bash
+mkdir -p ~/.claude/skills/agent-cli/references ~/.claude/skills/agent-cli/scripts
+cp SKILL.md            ~/.claude/skills/agent-cli/SKILL.md
+cp references/*.md     ~/.claude/skills/agent-cli/references/
+cp scripts/*.sh        ~/.claude/skills/agent-cli/scripts/
+chmod +x ~/.claude/skills/agent-cli/scripts/*.sh
+```
+
+- Run the commands above inside `feature-pack/agent-cli/`. For OpenClaw or another agent, only change the skill path to match its convention. `SKILL.md` is self-contained.
+- Run `bash scripts/detect-env.sh` first. It tells macOS, Linux and WSL apart and prints the CLIs you can use now, install hints for the missing ones, and WSL notes.
+- If your agent has a TOOLS.md (or an equivalent catalog), add the contents of `config/tools-section.md` to it.
+- The default OpenCode model is `opencode/deepseek-v4-flash-free`. To use another one, run `export OPENCODE_MODEL=<provider/model>` (list them with `opencode models`).
+- For Pi, change the default model with `export PI_MODEL=<provider/model>`. Check authentication first with `pi auth check --provider <provider> --json`. Use `--skill` to inject skills and `--tools` to restrict tools.
+
+### Verify
+
+```bash
+bash ~/.claude/skills/agent-cli/scripts/selftest.sh   # run in an isolated or trusted folder
+```
+
+Also go through the checklist in `test/verify.md`.
+
+## Usage
+
+### Supported CLIs
+
+| CLI | Non-interactive | Autonomous | Resume |
 |-----|--------|---------|--------|
 | Claude Code | `claude -p` | `--dangerously-skip-permissions` | `--resume <sid>` |
 | Codex | `codex exec` | `--full-auto` ⎮ `--yolo` | `codex exec resume --last` |
 | Gemini | `gemini -p` | `--approval-mode yolo` | `--resume <session_id>` |
-| OpenCode | `opencode run` | 기본 무승인 | `-s <sid>` / `-c` |
+| OpenCode | `opencode run` | no approval by default | `-s <sid>` / `-c` |
 | Cursor Agent | `cursor-agent -p` | `-f` / `--force` | `--resume <chatId>` |
-| Pi | `pi -p` | `--tools <allowlist>` (승인 프롬프트 없음) | `--session-id <sid>` / `--session <sid>` |
+| Pi | `pi -p` | `--tools <allowlist>` (no approval prompt) | `--session-id <sid>` / `--session <sid>` |
 
-(+ Aider/Amp 참고 — `references/install-and-compare.md`)
+- Aider and Amp are covered only as notes (`references/install-and-compare.md`).
+- During a session the skill triggers on requests such as "have codex adversarially review this PR", "cross-check this design with Gemini" or "resume the earlier session and ask a follow-up".
 
-## 구성
+### Delegate and resume
 
-```
-agent-cli/
-├── SKILL.md                       ← 스킬 정의 (메인 지침 + 매트릭스 + 페르소나)
-├── references/
-│   ├── per-cli.md                 ← CLI별 비대화/자동주행/resume 상세
-│   ├── install-and-compare.md     ← 설치·인증·Trust·래핑 비교·함정
-│   └── personas.md                ← DA/designer/architect system-prompt
-├── scripts/
-│   ├── selftest.sh                ← 6종 비대화·자율·resume 일괄 점검(타임아웃·로그)
-│   ├── test_opencode.sh           ← opencode 단독(모델 자동탐색)
-│   ├── resume_chain.sh            ← 페르소나+다회 resume 체인
-│   └── cloud-dataset-batch.sh     ← cloud session credits 로 학습·라벨링 데이터 대량 생성(+회수)
-├── cli/install.md                 ← 에이전트 CLI 설치 안내
-├── config/tools-section.md        ← TOOLS.md 추가 섹션
-└── test/verify.md                 ← 설치 검증
+```bash
+bash ~/.claude/skills/agent-cli/scripts/resume_chain.sh codex DA "Review this diff adversarially" "Rank the findings by priority"
+
+# To pin the Claude model and effort
+CLAUDE_MODEL=<model-id> CLAUDE_EFFORT=high \
+bash ~/.claude/skills/agent-cli/scripts/resume_chain.sh claude DA \
+  "Review this change adversarially" \
+  "Just tell me the final approval decision again"
 ```
 
-## 클라우드 크레딧 배치 (학습·라벨링 데이터 생성)
+- When `resume_chain.sh` calls Claude, it passes the `CLAUDE_MODEL` and `CLAUDE_EFFORT` environment variables through unchanged.
 
-Claude **cloud session credits**(구독과 별도로 지급되는 $250류)는 *cloud session 에서만* 차감된다. 로컬 CLI·프록시 경유 호출로는 0. 그래서 데이터 생성 물량을 크레딧으로 태우려면 이 경로뿐이다.
+### Scripts
 
-`scripts/cloud-dataset-batch.sh` 는 **repo·코드 없이** 빈 폴더에서 cloud session 을 띄우고, 완료되면 회수(teleport)해서 답변에 찍힌 JSONL 만 뽑아 데이터셋으로 적재한다.
+| Script | What it does |
+|---|---|
+| `scripts/detect-env.sh` | tells the OS apart, lists usable CLIs, install hints, WSL notes |
+| `scripts/selftest.sh` | checks non-interactive, autonomous and resume for all six CLIs in one run (with timeouts and logs) |
+| `scripts/test_opencode.sh` | checks OpenCode alone (finds the model automatically) |
+| `scripts/resume_chain.sh` | a chain of a persona plus several resume turns |
+| `scripts/cloud-dataset-batch.sh` | generates training and labeling data in bulk with cloud session credits, then retrieves it |
+
+### Cloud credits batch
+
+Claude cloud session credits (credits granted separately from a subscription) are charged only in cloud sessions. Calls from a local CLI or through a proxy are not charged. `scripts/cloud-dataset-batch.sh` starts a cloud session in an empty folder with no repository and no code, retrieves it (teleport) when it finishes, extracts only the JSONL printed in the answer, and accumulates it as a dataset.
 
 ```bash
 bash scripts/cloud-dataset-batch.sh --task lexicon --lang ko,ja,th --count 300 --batch 25 --parallel 3 --budget 20
 bash scripts/cloud-dataset-batch.sh --task label   --lang ko --labels work,tech,legal,daily,billing,other --count 200
-bash scripts/cloud-dataset-batch.sh --task doc     --lang ko --count 4 --batch 4 --parallel 1 --budget 1   # 소량 시험
+bash scripts/cloud-dataset-batch.sh --task doc     --lang ko --count 4 --batch 4 --parallel 1 --budget 1   # small trial run
 ```
 
-| task | 만드는 데이터 |
+| task | Data it produces |
 |---|---|
-| `lexicon` | 언어학 사전 항목(lemma·pos·IPA·gloss·예문·register) |
-| `parallel` | 병렬 말뭉치(src/tgt·domain) |
-| `label` | 분류 라벨링(text·label·rationale) — `--labels` 로 폐쇄 집합 고정 |
-| `qa` | 언어 학습 Q/A(level·topic) |
-| `doc` | 장문 문서 섹션(520자/줄) — 대량 소진용 |
-| `free` | 자유 형식 |
+| `lexicon` | linguistic dictionary entries (lemma, pos, IPA, gloss, example, register) |
+| `parallel` | parallel corpus (src / tgt, domain) |
+| `label` | classification labels (text, label, rationale); `--labels` fixes the label set |
+| `qa` | language-learning Q/A (level, topic) |
+| `doc` | long-document sections (520 characters per line); for burning through credits in bulk |
+| `free` | free format |
 
-- 출력: `<out>/data.jsonl`(배치 간 중복 제거 + `id` 재부여) · `<out>/run-*/index.tsv`(세션·건수 원장) · `ledger.json`(크레딧 델타)
-- 실측: 세션 1개당 레코드 25건 수준, **레코드당 ≈ $0.03**, 병렬 2~4로 확장
-- 주의: cloud credits 는 만료일이 있어(예: 11-05) 그 전에 태워야 하고, `--budget` 으로 지출 상한을 건다. 대량 반복 생성은 계정 어뷰징 판정 여지가 있으니 **실제로 쓸 데이터**를 만들 것.
-- 전제: `~/.headroom/claude-credit.sh`(ccx/ccxt) · `claude ≥2.1.310` · tmux. 상세 절차·함정은 `~/.headroom/USAGE_CREDITS_PLAYBOOK.md` §13-5·§13-7·§13-8.
+- Output: `<out>/data.jsonl` (duplicates removed across batches, `id` reassigned) · `<out>/run-*/index.tsv` (ledger of sessions and counts) · `ledger.json` (credit change)
+- Measured: about 25 records per session, about $0.03 per record, scaling with parallelism 2 to 4.
+- Note: cloud credits have an expiry date, so use them before it, and set a spending cap with `--budget`. Large repeated generation can be judged as account abuse, so generate data you will actually use.
 
-## 지원 환경
+### Safety
 
-**macOS · Linux · WSL.** 처음이거나 WSL이면 환경 감지부터:
-```bash
-bash scripts/detect-env.sh   # OS 구분 + 지금 쓸 수 있는 CLI + 설치 힌트 + WSL 주의
-```
+- Autonomous flags (dangerous / full-auto / yolo / force) remove the human approval gate. Use them only in an isolated or trusted workspace.
+- Each delegated CLI needs its own authentication. This pack does not inject credentials.
+- Treat delegated results as untrusted input and review them in your own session before use.
 
-## 설치
+## Requirements
 
-`INSTALL.md`를 에이전트에게 전달하거나, 수동으로 `SKILL.md`+`references/`+`scripts/`를 `~/.claude/skills/agent-cli/`에 복사.
+- Supported: macOS, Linux and WSL
+- `perl` and `python3` — built into macOS. On WSL or Ubuntu without them: `sudo apt install -y perl python3`
+- At least one of the six agent CLIs on your PATH, with its own authentication done. A CLI that is not installed is skipped automatically.
+- WSL: OAuth opens in the Windows browser (you can copy and paste the URL by hand). cursor-agent may be missing (skipped automatically). Work inside `~/`.
+- Cloud credits batch only: `~/.headroom/claude-credit.sh` (ccx / ccxt), `claude` 2.1.310 or newer, and tmux
 
-## 의존성
+## Links
 
-- `perl`, `python3` — macOS 내장 / **WSL·Ubuntu**: `sudo apt install -y perl python3`
-- 6종 중 **최소 1개** 에이전트 CLI가 PATH + 자체 인증 (본 팩은 자격증명 미주입). Pi는 OpenGateway/Keychain 설정을 사용한다.
-- WSL 주의: OAuth는 Windows 브라우저로 열림(URL 수동 복붙 가능) · cursor-agent는 없을 수 있음(자동 SKIP) · 작업은 `~/` 안에서
-
-## 안전
-
-자동주행 = 사람 승인 게이트 제거. **격리/신뢰 워크스페이스에서만**. 위임 결과는 신뢰 불가 입력으로 취급해 본 세션에서 검수 후 사용.
-
-## Claude 모델 고정
-
-`resume_chain.sh`는 Claude 호출 시 `CLAUDE_MODEL`과 `CLAUDE_EFFORT` 환경변수를 그대로 전달한다.
-
-```bash
-CLAUDE_MODEL=claude-fable-5 CLAUDE_EFFORT=high \
-bash scripts/resume_chain.sh claude DA \
-  "이 변경을 적대검증해줘" \
-  "최종 승인 여부만 다시 말해줘"
-```
+- [INSTALL.md](INSTALL.md) — install guide for agents
+- [SKILL.md](SKILL.md) — the skill definition
+- [references/per-cli.md](references/per-cli.md) — per-CLI details for non-interactive, autonomous and resume
+- [references/install-and-compare.md](references/install-and-compare.md) — install, authentication and comparison
+- [references/personas.md](references/personas.md) — the DA, designer and architect personas
+- [AI Feature Pack catalog](../../README.md)
