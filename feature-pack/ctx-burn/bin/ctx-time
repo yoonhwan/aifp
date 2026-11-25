@@ -1,0 +1,862 @@
+#!/usr/bin/env python3
+"""ctx-time — where did the seats spend their time? (read-only)
+
+Reads local session logs (pi · codex) and reports per-category working time, the
+commands that ran over the limit (70s by default) and where the wall clock went.
+Writes at most one html file under --out (two when --split is used).
+
+Safety — two separate promises:
+  (1) body keys are never queried: only timestamp · durationMs · type · role ·
+      session_info.name · toolCall name/id · arguments.command (or path, head 400) ·
+      arguments.timeout · errorMessage (head 60).
+  (2) nothing is exported but numbers, timestamps, fixed words from this file,
+      seat names and session file paths. Command lines and error messages are read
+      to pick a category and never printed — not even the first word.
+
+Reading budget is staged (§3): list names (no read) → stat up to --max-scan →
+name lookup inside 1/5 of --max-mb → read bodies until --max-mb is spent.
+Every cut is printed; nothing is silently dropped.
+"""
+import argparse
+import glob
+import html
+import json
+import os
+import re
+import sys
+import time
+from datetime import datetime
+
+NAME_PROBE = 64 * 1024
+PI_ROOT = "~/.pi/agent/sessions"
+CODEX_ROOT = "~/.codex/sessions"
+DEFAULT_OUT = "~/.cache/ctx-burn/time"
+
+CATS = [
+    ("sleep 대기", re.compile(r"(^|[;&|]\s*|\bdo\s+|\bthen\s+)sleep\s+\d")),
+    ("시험", re.compile(r"pytest|tests?/test_|test_[A-Za-z0-9_]+\.(sh|py)|runb\.sh|solo\.sh|chunk\.sh")),
+    ("쪽지(mbox)", re.compile(r"mbox\.sh")),
+    ("승인·착지·설치 도구", re.compile(r"ft-autonomy|ft-merge|ft-hil|ft-nano-(close|record)|ft-successor|ft-seat-retire|ft-index-lint|gen-h-|/tmp/h\d+")),
+    ("git", re.compile(r"\bgit\b|\bgh\b")),
+    ("코드 찾기(ci·grep·find)", re.compile(r"\bci\b|\bgrep\b|\brg\b|\bfind\b")),
+]
+CAT_READ = "파일 읽기·쓰기"
+CAT_BASH = "그 밖 bash"
+
+KINDS = [
+    ("pytest", re.compile(r"\bpytest\b")),
+    ("셸 시험(test_*.sh)", re.compile(r"test_[A-Za-z0-9_]+\.sh")),
+    ("sleep", re.compile(r"(^|[;&|(]\s*|\bdo\s+|\bthen\s+)sleep\s+\d")),
+    ("grep -r(되풀이 검색)", re.compile(r"\bgrep\s+(-[A-Za-z]*[rR][A-Za-z]*|--recursive)")),
+    ("grep(그 밖)", re.compile(r"\bgrep\b")),
+    ("find", re.compile(r"(^|[;&|(]\s*)find\s")),
+    ("rg", re.compile(r"\brg\s")),
+    ("ci", re.compile(r"(^|[;&|(]\s*)ci\s")),
+    ("git", re.compile(r"\bgit\s")),
+    ("timeout 을 붙인 명령", re.compile(r"\b(g?timeout)\s+(-k\s+\S+\s+)?\d")),
+]
+
+COL = {"LLM 생성": "#4c78a8", "모델 오류 재시도": "#000000", "sleep 대기": "#d62728", "시험": "#f58518",
+       "쪽지(mbox)": "#72b7b2", "승인·착지·설치 도구": "#b279a2", "git": "#9d755d",
+       "코드 찾기(ci·grep·find)": "#54a24b", CAT_READ: "#bab0ac", CAT_BASH: "#eeca3b",
+       "유휴(다음 입력 대기)": "#dddddd", "그 밖(사이 시간)": "#f2f2f2"}
+ORDER = list(COL)
+IDLE = "유휴(다음 입력 대기)"
+OTHER = "그 밖(사이 시간)"
+ROLES = ["desk", "master", "arch", "da", "nano", "그 밖"]
+ROLE_RX = re.compile(r"-(master|arch|nano|desk|da)(?=[-#]|$)")
+
+STR = {
+    "en": {
+        "head": "ctx-time — last %s · sessions %d (pi %d · codex %d) · worked %s · %s",
+        "row": " %d %-16s %9s %3.0f%%  %s  %d calls · avg %s · over %s: %d",
+        "long": "over %s commands %d (%.1f per 100) · longest %s · model error retry %s",
+        "omitted": "omitted: claude (no per-call timing) · codex cannot separate model-error retries",
+        "html": "html: %s",
+        "trim_scan": "scan cut: %d files not looked at (limit %d files · oldest first)",
+        "trim_name": "name lookup cut: %d candidates unnamed (read budget %s, name share %s)",
+        "trim_sample": "sample cut: %d sessions left out (limit %d sessions)",
+        "trim_mb": "sample cut: %d sessions left out (read budget %s)",
+        "trim_grow": "read cut: %d sessions stopped at the reserved size (the log grew while reading)",
+        "no_session": "no session in window — try a larger --hours",
+        "split_out": "cannot compare: split is outside the window",
+        "split_head": "%s → %s (worked %s → %s)",
+        "col_worked": "worked",
+        "mpi": "pi", "mcodex": "codex",
+    },
+    "ko": {
+        "head": "ctx-time — 최근 %s · 세션 %d개(pi %d · codex %d) · 일한 시간 %s · %s",
+        "row": " %d %-16s %9s %3.0f%%  %s  %d회 · 평균 %s · %s 넘음 %d",
+        "long": "%s 넘은 명령 %d개(명령 100개당 %.1f) · 가장 긴 1회 %s · 모델 오류 재시도 %s",
+        "omitted": "빠짐: claude(호출별 시간 기록 없음) · codex 는 모델 오류 재시도를 가르지 못함",
+        "html": "html: %s",
+        "trim_scan": "훑기 줄임: 파일 %d개는 보지 않음(상한 %d개 · 만든 때가 오래된 것부터 빠짐)",
+        "trim_name": "이름 조회 줄임: 후보 %d개는 이름을 못 봄(읽기 상한 %s 가운데 이름 몫 %s)",
+        "trim_sample": "표본 줄임: 세션 %d개 빠짐(상한 %d개)",
+        "trim_mb": "표본 줄임: 세션 %d개 빠짐(읽기 상한 %s)",
+        "trim_grow": "읽기 잘림: 세션 %d개는 예약한 크기에서 멈춤(읽는 동안 자람)",
+        "no_session": "창 안에 세션이 없다 — --hours 를 키운다",
+        "split_out": "비교 불가: split 이 창 밖",
+        "split_head": "%s → %s(일한 시간 %s → %s)",
+        "col_worked": "일한 시간",
+        "mpi": "pi", "mcodex": "codex",
+    },
+}
+
+
+# ---------------------------------------------------------------- cells (verbatim from the original)
+def ts(s):
+    if isinstance(s, (int, float)):
+        return s / 1000.0 if s > 1e11 else float(s)
+    try:
+        return datetime.fromisoformat(str(s).replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return None
+
+
+def cat_of(tool, cmd):
+    if tool != "bash":
+        return CAT_READ
+    for name, rx in CATS:
+        if rx.search(cmd or ""):
+            return name
+    return CAT_BASH
+
+
+def kinds_of(cmd):
+    out, seen_grep = [], False
+    for name, rx in KINDS:
+        if rx.search(cmd or ""):
+            if name.startswith("grep"):
+                if seen_grep:
+                    continue
+                seen_grep = True
+            out.append(name)
+    return out
+
+
+def set_timeout(cmd, tool_tmo):
+    """Biggest limit the command was given, as a band name — «timeout N» and the bash tool timeout arg."""
+    vals = [int(x) for x in re.findall(r"\bg?timeout\s+(?:-k\s+\S+\s+)?(\d+)", cmd or "")]
+    if isinstance(tool_tmo, (int, float)) and tool_tmo:
+        vals.append(int(tool_tmo))
+    if not vals:
+        return None
+    v = max(vals)
+    return "70초 이하" if v <= 70 else "71 ~ 140초" if v <= 140 else "141 ~ 300초" if v <= 300 else "301 ~ 600초" if v <= 600 else "600초 넘음"
+
+
+def err_cat(msg):
+    """Error category = first 3-digit number in 400..599, else a fixed word. The text never leaves."""
+    m = re.search(r"(?<!\d)([4-5]\d\d)(?!\d)", str(msg or ""))
+    return m.group(1) if m else "그 밖"
+
+
+def role_of(name):
+    m = ROLE_RX.search(name or "")
+    return m.group(1) if m else "그 밖"
+
+
+def hm(s):
+    s = int(s)
+    return "%d시간 %02d분" % (s // 3600, s % 3600 // 60) if s >= 3600 else "%d분 %02d초" % (s // 60, s % 60)
+
+
+def mb(n):
+    return "%.0fMB" % (n / 1048576.0) if n >= 1048576 else "%.1fMB" % (n / 1048576.0)
+
+
+def seat_of(path, probed):
+    """Seat name and role. The session's own name comes first; otherwise the `-worktrees-<name>`
+    token of the path (a worktree seat = a nano seat), and last the session folder name."""
+    if probed:
+        return probed, role_of(probed)
+    parent = os.path.basename(os.path.dirname(path))
+    m = re.search(r"-worktrees-([^/]+?)(?:--|$)", parent)
+    if m:
+        return m.group(1), "nano"
+    return (parent or "?"), "그 밖"
+
+
+# ---------------------------------------------------------------- reading budget (§3)
+class Budget:
+    def __init__(self, max_mb):
+        self.limit = int(max_mb * 1048576) if max_mb else 0
+        self.spent = 0
+        self.name_spent = 0
+        self.name_limit = (self.limit // 5) if self.limit else 0
+
+    def body_can(self, n):
+        return not self.limit or self.spent + n <= self.limit
+
+    def name_can(self, n):
+        return not self.name_limit or self.name_spent + n <= self.name_limit
+
+
+def read_probe(path):
+    """First 64KB only — the session_info / session_meta line lives there (measured)."""
+    with open(path, "rb") as f:
+        return f.read(NAME_PROBE)
+
+
+def name_from_probe(raw, runtime):
+    for line in raw.decode("utf-8", "replace").splitlines():
+        if '"session_info"' not in line and '"session_meta"' not in line:
+            continue
+        try:
+            d = json.loads(line)
+        except Exception:
+            continue
+        if d.get("type") == "session_info" and d.get("name"):
+            return d["name"]
+        p = d.get("payload") if isinstance(d.get("payload"), dict) else {}
+        if p.get("type") == "session_meta" and p.get("cwd"):
+            return os.path.basename(str(p["cwd"]).rstrip("/")) or None
+    return None
+
+
+# ---------------------------------------------------------------- selection
+def list_files(runtimes):
+    """Step 1 — file names only (no read, no stat). Session file names start with the creation time."""
+    rows = []
+    for rt, root in (("pi", PI_ROOT), ("codex", CODEX_ROOT)):
+        if rt not in runtimes:
+            continue
+        for p in glob.glob(os.path.join(os.path.expanduser(root), "**", "*.jsonl"), recursive=True):
+            rows.append((rt, p))
+    rows.sort(key=lambda x: os.path.basename(x[1]), reverse=True)
+    return rows
+
+
+def scan_window(files, max_scan, cutoff, until):
+    """Step 2 — stat up to max_scan files, drop what mtime puts outside the window."""
+    keep, cut = [], 0
+    for i, (rt, p) in enumerate(files):
+        if max_scan and i >= max_scan:
+            cut = len(files) - i
+            break
+        try:
+            mt = os.path.getmtime(p)
+        except OSError:
+            continue
+        if mt < cutoff or mt > until:
+            continue
+        keep.append((rt, p, mt))
+    keep.sort(key=lambda x: -x[2])
+    return keep, cut
+
+
+def pick(keep, opts, budget):
+    """Step 3 · 4 — name lookup inside the name share, then bodies inside what is left."""
+    picked, matched = [], []
+    cut = {"name": 0, "sessions": 0, "mb": 0}
+    seat_rx = re.compile(opts.seat) if opts.seat else None
+    cands = keep
+    if not (seat_rx or opts.role) and opts.max_sessions and len(keep) > opts.max_sessions:
+        cands = keep[: opts.max_sessions]
+        cut["sessions"] = len(keep) - len(cands)
+
+    attempted = 0
+    for rt, p, _mt in cands:
+        try:
+            size = min(os.path.getsize(p), NAME_PROBE)
+        except OSError:
+            continue
+        if not budget.name_can(size):
+            break
+        try:
+            raw = read_probe(p)
+        except OSError:
+            continue
+        attempted += 1
+        budget.name_spent += len(raw)
+        budget.spent += len(raw)
+        nm, role = seat_of(p, name_from_probe(raw, rt))
+        if seat_rx and not seat_rx.search(nm):
+            continue
+        if opts.role and role != opts.role:
+            continue
+        matched.append((rt, p, nm, role))
+        if opts.max_sessions and len(matched) >= opts.max_sessions:
+            break
+    cut["name"] = len(cands) - attempted
+
+    for rt, p, nm, role in matched:
+        try:
+            size = os.path.getsize(p)
+        except OSError:
+            continue
+        if not budget.body_can(size):
+            cut["mb"] += 1
+            continue
+        budget.spent += size
+        picked.append((rt, p, nm, role, size))   # 예약한 크기 = 실제 읽기 상한
+    return picked, cut
+
+
+# ---------------------------------------------------------------- parsing (read columns only)
+def read_lines(path, cap):
+    """Read at most `cap` bytes and never more. Returns (lines, bytes read, truncated).
+
+    The budget is reserved from the size seen while picking. A log that grows between
+    picking and reading must not spend past that reservation. So the read itself is
+    bounded — `f.read(cap)`, not a line loop that pulls a whole 2MB line in first —
+    and `fstat` on the same handle tells whether more data is waiting beyond the cap
+    (no extra byte is read for that). When it was cut, the half-read last line is
+    dropped; the caller prints a line so nothing is trimmed silently.
+    `cap` is always the reservation (0 = the file looked empty, so nothing is read).
+    """
+    with open(path, "rb") as f:
+        raw = f.read(cap) if cap > 0 else b""
+        truncated = os.fstat(f.fileno()).st_size > len(raw)
+    read = len(raw)
+    if truncated:
+        i = raw.rfind(b"\n")
+        raw = raw[: i + 1] if i >= 0 else b""
+    return [x.decode("utf-8", "replace") for x in raw.splitlines()], read, truncated
+
+
+def parse_pi(lines, w_from, w_to):
+    rows, calls = [], {}
+    for line in lines:
+        try:
+            d = json.loads(line)
+        except Exception:
+            continue
+        t = ts(d.get("timestamp"))
+        if t is None or t < w_from or t >= w_to:
+            continue
+        m = d.get("message") or {}
+        role = m.get("role")
+        if d.get("type") == "custom_message" or role == "user":
+            rows.append((t, "in", 0.0, None))
+        elif role == "assistant":
+            dur = (m.get("durationMs") or 0) / 1000.0
+            has_call = False
+            for c in m.get("content") or []:
+                if isinstance(c, dict) and c.get("type") == "toolCall":
+                    has_call = True
+                    a = c.get("arguments") or {}
+                    calls[c.get("id")] = (c.get("name"),
+                                          str(a.get("command") or a.get("path") or "")[:400],
+                                          a.get("timeout"))
+            em = m.get("errorMessage")
+            if em and not has_call:
+                rows.append((t, "err", dur, err_cat(em)))
+            else:
+                rows.append((t, "llm" if has_call else "end", dur, None))
+        elif role == "toolResult":
+            dur = (m.get("durationMs") or 0) / 1000.0
+            tool, cmd, tmo = calls.get(m.get("toolCallId"), (m.get("toolName"), "", None))
+            rows.append((t, "tool", dur, (tool, cmd, tmo)))
+    return rows
+
+
+def _secs(d):
+    if isinstance(d, dict):
+        return float(d.get("secs") or 0) + float(d.get("nanos") or 0) / 1e9
+    if isinstance(d, (int, float)):
+        return float(d)
+    return 0.0
+
+
+def parse_codex(lines, w_from, w_to):
+    rows = []
+    for line in lines:
+        try:
+            d = json.loads(line)
+        except Exception:
+            continue
+        p = d.get("payload") if isinstance(d.get("payload"), dict) else {}
+        t = ts(d.get("timestamp"))
+        if t is None or t < w_from or t >= w_to:
+            continue
+        pt = p.get("type")
+        if pt == "task_started":
+            rows.append((t, "in", 0.0, None))
+        elif pt == "task_complete":
+            rows.append((t, "end", (p.get("duration_ms") or 0) / 1000.0, None))
+        elif pt == "item_completed":
+            it = p.get("item") if isinstance(p.get("item"), dict) else {}
+            if it.get("type") != "CommandExecution":
+                continue
+            cmd = it.get("command")
+            if isinstance(cmd, list):
+                cmd = " ".join(str(x) for x in cmd)
+            rows.append((t, "tool", _secs(it.get("duration")), ("bash", str(cmd or "")[:400], None)))
+    return rows
+
+
+# ---------------------------------------------------------------- folding
+def fold(rows, seat, role, path, limit):
+    if not rows:
+        return None
+    r = {"seat": seat, "role": role, "file": path, "start": rows[0][0], "end": rows[-1][0],
+         "llm": 0.0, "idle": 0.0, "err": 0.0, "tool": {}, "long": [], "turns": 0,
+         "ncalls": 0, "nllm": 0, "nerr": 0, "errs": {}, "kinds": {}, "segs": []}
+    last_end = None
+    for t, kind, dur, extra in rows:
+        if kind == "err":
+            r["err"] += dur
+            r["nerr"] += 1
+            r["errs"][extra] = r["errs"].get(extra, 0) + 1
+            r["segs"].append((t - dur, dur, "모델 오류 재시도", ""))
+        elif kind in ("llm", "end"):
+            r["llm"] += dur
+            r["nllm"] += 1
+            r["segs"].append((t - dur, dur, "LLM 생성", ""))
+            if kind == "end":
+                last_end, r["turns"] = t, r["turns"] + 1
+            else:
+                last_end = None
+        elif kind == "tool":
+            c = cat_of(extra[0], extra[1])
+            r["tool"][c] = r["tool"].get(c, 0.0) + dur
+            r["ncalls"] += 1
+            r["segs"].append((t - dur, dur, c, ""))
+            ks = []
+            if extra[0] == "bash":
+                ks = kinds_of(extra[1])
+                for kd in ks:
+                    k = r["kinds"].setdefault(kd, [0, 0.0, 0, 0.0])
+                    k[0] += 1
+                    k[1] += dur
+                    k[2] += 1 if dur > limit else 0
+                    k[3] = max(k[3], dur)
+                band = set_timeout(extra[1], extra[2])
+                if band:
+                    k = r["kinds"].setdefault("잡은 상한 " + band, [0, 0.0, 0, 0.0])
+                    k[0] += 1
+                    k[1] += dur
+                    k[2] += 1 if dur > limit else 0
+                    k[3] = max(k[3], dur)
+            if dur > limit:
+                r["long"].append({"sec": round(dur), "cat": c, "kinds": ks,
+                                  "band": set_timeout(extra[1], extra[2]), "at": t})
+            last_end = None
+        elif kind == "in":
+            if last_end is not None:
+                r["idle"] += max(0.0, t - last_end)
+                r["segs"].append((last_end, max(0.0, t - last_end), IDLE, ""))
+            last_end = None
+    r["wall"] = r["end"] - r["start"]
+    r["toolsum"] = sum(r["tool"].values())
+    r["other"] = max(0.0, r["wall"] - r["llm"] - r["err"] - r["toolsum"] - r["idle"])
+    return r
+
+
+def parts(r):
+    p = {"LLM 생성": r["llm"], "모델 오류 재시도": r["err"], IDLE: r["idle"], OTHER: r["other"]}
+    p.update(r["tool"])
+    return p
+
+
+def adjust_codex(r):
+    """codex 기록에는 모델 응답 시간 칸이 없다 — 턴 시간에서 그 턴의 명령 합을 뺀 값을 쓴다(설계 §5)."""
+    r["llm"] = max(0.0, r["llm"] - r["toolsum"])
+    r["other"] = max(0.0, r["wall"] - r["llm"] - r["err"] - r["toolsum"] - r["idle"])
+    return r
+
+
+def work(r):
+    return max(r["wall"] - r["idle"], 1.0)
+
+
+# ---------------------------------------------------------------- html
+def esc(x):
+    return html.escape(str(x))
+
+
+def hm_html(s):
+    return esc(hm(s))
+
+
+def strip(segs, total, bins=60):
+    if total <= 0:
+        return ""
+    acc = [dict() for _ in range(bins)]
+    for st, du, c, _lab in segs:
+        if du <= 0:
+            continue
+        b0 = max(0, min(bins - 1, int(bins * (st - segs[0][0]) / total)))
+        b1 = max(b0 + 1, min(bins, int(bins * (st + du - segs[0][0]) / total)))
+        for b in range(b0, b1):
+            acc[b][c] = acc[b].get(c, 0.0) + du / (b1 - b0)
+    out = []
+    for b in acc:
+        c = max(b, key=b.get) if b and max(b.values()) > 0 else OTHER
+        out.append('<span title="%s" style="display:inline-block;height:20px;width:%.3f%%;background:%s"></span>'
+                   % (esc(c), 100.0 / bins, COL.get(c, "#888")))
+    return '<div style="width:100%%;border:1px solid #ccc;font-size:0;white-space:nowrap;overflow:hidden">%s</div>' % "".join(out)
+
+
+CSS = ('<style>body{font:14px/1.5 -apple-system,sans-serif;margin:24px;max-width:1180px}'
+       'table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #e5e5e5;padding:4px 6px;'
+       'text-align:left;vertical-align:top}th{background:#fafafa}.n{text-align:right;white-space:nowrap}'
+       'code{font-size:12px}h2{margin-top:30px}</style>')
+
+
+def render(res, meta, L, S):
+    by_role = {}
+    for r in res:
+        by_role.setdefault(r["role"], []).append(r)
+    H = ['<!doctype html><meta charset="utf-8"><title>ctx-time</title>', CSS,
+         '<h1>ctx-time — where the seats spent their time</h1>',
+         '<p>%s · %.0f시간 · %s</p>' % (esc(time.strftime("%Y-%m-%d %H:%M")), meta["hours"],
+                                         esc(", ".join("%s %d" % (k, len(v)) for k, v in sorted(by_role.items())) or "-")),
+         "<p>" + " ".join('<span style="display:inline-block;width:12px;height:12px;background:%s;border:1px solid #999"></span> %s&nbsp;&nbsp;'
+                          % (COL[k], esc(k)) for k in ORDER) + "</p>"]
+    for line in meta["notes"]:
+        H.append("<p><b>%s</b></p>" % esc(line))
+    H.append("<h2>1. 역할별 합계(일한 시간 = 벽시계 − 유휴)</h2><table><tr><th>역할</th><th class=n>세션</th>"
+             "<th class=n>벽시계</th><th class=n>유휴</th><th class=n>LLM</th><th class=n>모델 오류 재시도</th>"
+             "<th class=n>시험</th><th class=n>sleep</th><th class=n>70초 넘은 명령</th><th style='width:30%'>일한 시간의 갈래</th></tr>")
+    for role in sorted(by_role, key=lambda k: (ROLES.index(k) if k in ROLES else 99, k)):
+        rs = by_role[role]
+        agg = {k: 0.0 for k in ORDER}
+        for r in rs:
+            for k, v in parts(r).items():
+                agg[k] = agg.get(k, 0.0) + v
+        tot = sum(agg.get(k, 0.0) for k in ORDER if k != IDLE) or 1.0
+        H.append("<tr><td>%s</td><td class=n>%d</td><td class=n>%s</td><td class=n>%s</td><td class=n>%s</td>"
+                 "<td class=n>%s</td><td class=n>%s</td><td class=n>%s</td><td class=n>%d</td><td>%s</td></tr>"
+                 % (esc(role), len(rs), hm_html(sum(r["wall"] for r in rs)), hm_html(sum(r["idle"] for r in rs)),
+                    hm_html(sum(r["llm"] for r in rs)), hm_html(sum(r["err"] for r in rs)),
+                    hm_html(sum(r["tool"].get("시험", 0) for r in rs)),
+                    hm_html(sum(r["tool"].get("sleep 대기", 0) for r in rs)),
+                    sum(len(r["long"]) for r in rs),
+                    "".join('<span title="%s" style="display:inline-block;height:16px;width:%.2f%%;background:%s"></span>'
+                            % (esc(k), 100 * agg.get(k, 0) / tot, COL[k]) for k in ORDER if agg.get(k, 0) > 0)))
+    H.append("</table>")
+    H.append("<h2>2. 세션별 띠(긴 세션 12개)</h2>")
+    for r in sorted(res, key=lambda z: -z["wall"])[:12]:
+        H.append("<div><p><b>%s</b> · %s · %s · 70초 넘음 %d</p>%s</div>"
+                 % (esc(r["seat"]), esc(r["role"]), hm_html(r["wall"]), len(r["long"]),
+                    strip(r["segs"], max(r["end"] - r["start"], 1.0))))
+    H.append("<h2>3. 느린 단계 10개(걸린 시간 · 갈래 · 명령 종류)</h2>"
+             "<table><tr><th class=n>걸린 시간</th><th>갈래</th><th>명령 종류</th><th>좌석</th><th class=n>시각</th></tr>")
+    steps = []
+    for r in res:
+        for st, du, c, _ in r["segs"]:
+            if c in (IDLE, "모델 오류 재시도"):
+                continue
+            steps.append((du, c, r))
+    for du, c, r in sorted(steps, key=lambda z: -z[0])[:10]:
+        H.append("<tr><td class=n>%s</td><td>%s</td><td>%s</td><td>%s</td><td class=n>%s</td></tr>"
+                 % (hm_html(du), esc(c), esc(", ".join(kinds_of_kinds(r, du, c)) or "-"), esc(r["seat"]),
+                    esc(time.strftime("%m-%d %H:%M", time.localtime(r["end"])))))
+    H.append("</table>")
+    H.append("<h2>4. 70초 넘은 명령</h2><table><tr><th>시각</th><th class=n>초</th><th>좌석</th><th>갈래</th>"
+             "<th>명령 종류</th><th>잡은 상한</th></tr>")
+    longs = [(r, x) for r in res for x in r["long"]]
+    for r, x in sorted(longs, key=lambda z: -z[1]["sec"])[:50]:
+        H.append("<tr><td>%s</td><td class=n>%d</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>"
+                 % (esc(time.strftime("%m-%d %H:%M", time.localtime(x["at"]))), x["sec"], esc(r["seat"]),
+                    esc(x["cat"]), esc(", ".join(x["kinds"]) or "-"), esc(x["band"] or "-")))
+    H.append("</table>")
+    H.append("<h2>5. 명령 종류별</h2><table><tr><th>명령 종류</th><th class=n>횟수</th><th class=n>합</th>"
+             "<th class=n>평균</th><th class=n>70초↑</th><th class=n>최장</th></tr>")
+    agg = {}
+    for r in res:
+        for k, v in r["kinds"].items():
+            z = agg.setdefault(k, [0, 0.0, 0, 0.0])
+            z[0] += v[0]
+            z[1] += v[1]
+            z[2] += v[2]
+            z[3] = max(z[3], v[3])
+    for k, v in sorted(agg.items(), key=lambda z: -z[1][1]):
+        H.append("<tr><td>%s</td><td class=n>%d</td><td class=n>%s</td><td class=n>%s</td><td class=n>%d</td>"
+                 "<td class=n>%s</td></tr>"
+                 % (esc(k), v[0], hm_html(v[1]), hm_html(v[1] / max(v[0], 1)), v[2], hm_html(v[3])))
+    H.append("</table>")
+    H.append("<p>%s</p>" % esc(S["omitted"]))
+    return "\n".join(H)
+
+
+def kinds_of_kinds(r, du, cat):
+    """Command kinds that match a segment of this category and duration (numbers only)."""
+    out = [k for k, v in r["kinds"].items() if v[3] == du and not k.startswith("잡은 상한")]
+    return out[:2]
+
+
+def render_compare(before, after, meta, S):
+    def agg(res):
+        a = {"wall": 0.0, "idle": 0.0, "cmd": 0, "long": 0, "longest": 0.0, "p": {}, "kinds": {}, "n": len(res)}
+        for r in res:
+            a["wall"] += r["wall"]
+            a["idle"] += r["idle"]
+            a["cmd"] += r["ncalls"]
+            a["long"] += len(r["long"])
+            a["longest"] = max([a["longest"]] + [x["sec"] for x in r["long"]])
+            for k, v in parts(r).items():
+                a["p"][k] = a["p"].get(k, 0.0) + v
+            for k, v in r["kinds"].items():
+                z = a["kinds"].setdefault(k, [0, 0.0, 0, 0.0])
+                z[0] += v[0]
+                z[1] += v[1]
+                z[2] += v[2]
+                z[3] = max(z[3], v[3])
+        a["work"] = max(a["wall"] - a["idle"], 1.0)
+        return a
+
+    b, a = agg(before), agg(after)
+    H = ['<!doctype html><meta charset="utf-8"><title>ctx-time — before / after</title>', CSS,
+         "<h1>ctx-time — 앞·뒤 비교</h1>",
+         "<p>%s · 아래 표는 일한 시간 가운데 갈래가 차지한 비율</p>" % esc(S["split_head"] % (
+             time.strftime("%m-%d %H:%M", time.localtime(meta["split_from"])), meta["split_label"],
+             hm(b["work"]), hm(a["work"]))),
+         "<table><tr><th>갈래</th><th class=n>앞</th><th class=n>뒤</th><th class=n>차이</th></tr>"]
+    for k in ORDER:
+        pb, pa = 100 * b["p"].get(k, 0) / b["work"], 100 * a["p"].get(k, 0) / a["work"]
+        H.append("<tr><td>%s</td><td class=n>%.1f%%</td><td class=n>%.1f%%</td><td class=n>%+.1f</td></tr>"
+                 % (esc(k), pb, pa, pa - pb))
+    H.append("</table>")
+    H.append("<p>70초 넘은 명령: 앞 %d개(100개당 %.1f) → 뒤 %d개(100개당 %.1f) · 가장 긴 1회 %s → %s</p>"
+             % (b["long"], 100.0 * b["long"] / max(b["cmd"], 1), a["long"],
+                100.0 * a["long"] / max(a["cmd"], 1), esc(hm(b["longest"])), esc(hm(a["longest"]))))
+    H.append("<h2>명령 종류별</h2><table><tr><th>명령 종류</th><th class=n>앞 횟수</th><th class=n>앞 평균</th>"
+             "<th class=n>앞 70초↑</th><th class=n>뒤 횟수</th><th class=n>뒤 평균</th><th class=n>뒤 70초↑</th>"
+             "<th class=n>뒤 최장</th></tr>")
+    for k, v in sorted(b["kinds"].items(), key=lambda z: -z[1][1]):
+        w = a["kinds"].get(k, [0, 0.0, 0, 0.0])
+        H.append("<tr><td>%s</td><td class=n>%d</td><td class=n>%s</td><td class=n>%d</td><td class=n>%d</td>"
+                 "<td class=n>%s</td><td class=n>%d</td><td class=n>%s</td></tr>"
+                 % (esc(k), v[0], hm_html(v[1] / max(v[0], 1)), v[2], w[0], hm_html(w[1] / max(w[0], 1)),
+                    w[2], hm_html(w[3])))
+    H.append("</table><p>%s</p>" % esc(S["omitted"]))
+    return "\n".join(H)
+
+
+# ---------------------------------------------------------------- report
+def totals(res):
+    t = {"wall": 0.0, "idle": 0.0, "llm": 0.0, "err": 0.0, "other": 0.0, "tool": {}, "long_count": 0,
+         "ncalls": 0, "nllm": 0, "nerr": 0, "turns": 0, "kinds": {}, "errs": {}}
+    for r in res:
+        for k in ("wall", "idle", "llm", "err", "other", "ncalls", "nllm", "nerr", "turns"):
+            t[k] += r[k]
+        t["long_count"] += len(r["long"])
+        for k, v in r["tool"].items():
+            t["tool"][k] = t["tool"].get(k, 0.0) + v
+        for k, v in r["kinds"].items():
+            z = t["kinds"].setdefault(k, [0, 0.0, 0, 0.0])
+            z[0] += v[0]
+            z[1] += v[1]
+            z[2] += v[2]
+            z[3] = max(z[3], v[3])
+        for k, v in r["errs"].items():
+            t["errs"][k] = t["errs"].get(k, 0) + v
+    return t
+
+
+def cat_stats(res):
+    """Per category: [occurrences, seconds, over-limit count] — numbers only."""
+    st = {}
+    for r in res:
+        for _st, du, c, _lab in r["segs"]:
+            z = st.setdefault(c, [0, 0.0, 0])
+            z[0] += 1
+            z[1] += du
+        for x in r["long"]:
+            st.setdefault(x["cat"], [0, 0.0, 0])[2] += 1
+    return st
+
+
+def summary(res, meta, notes, opts, S, L):
+    out = []
+    t = totals(res)
+    npi = sum(1 for r in res if r.get("runtime") == "pi")
+    ncx = sum(1 for r in res if r.get("runtime") == "codex")
+    hours = "%g시간" % meta["hours"] if L == "ko" else "%gh" % meta["hours"]
+    out.append(S["head"] % (hours, len(res), npi, ncx, hm(work(t)),
+                            time.strftime("%Y-%m-%d %H:%M")))
+    for n in notes:
+        out.append(n)
+    p = {"LLM 생성": t["llm"], "모델 오류 재시도": t["err"], IDLE: t["idle"], OTHER: t["other"]}
+    p.update(t["tool"])
+    stats = cat_stats(res)
+    tot = work(t)
+    lim = "%g초" % opts.limit if L == "ko" else "%gs" % opts.limit
+    i = 0
+    for k, v in sorted(p.items(), key=lambda z: -z[1]):
+        if v < 1 or i >= 5:
+            continue
+        i += 1
+        pct = 100 * v / (max(t["wall"], 1.0) if k == IDLE else tot)
+        n, _s, over = stats.get(k, [0, 0.0, 0])
+        out.append(S["row"] % (i, k, hm(v), pct, "█" * max(1, min(24, int(pct / 4))), n,
+                               hm(v / max(n, 1)), lim, over))
+    longest = 0
+    for r in res:
+        longest = max([longest] + [x["sec"] for x in r["long"]])
+    out.append(S["long"] % (lim, t["long_count"], 100.0 * t["long_count"] / max(t["ncalls"], 1), hm(longest),
+                            hm(t["err"])))
+    out.append(S["omitted"])
+    if meta.get("html"):
+        out.append(S["html"] % meta["html"])
+    return "\n".join(out)
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="ctx-time", description="Where did the seats spend their time? (read-only)")
+    ap.add_argument("--seat", default=None, help="seat name pattern (regex)")
+    ap.add_argument("--role", default=None, help="master · arch · nano · desk · da")
+    ap.add_argument("--hours", type=float, default=3.0, help="window in hours (default 3)")
+    ap.add_argument("--max-sessions", type=int, default=40, help="sessions measured (default 40 · 0 = no cap)")
+    ap.add_argument("--max-mb", type=float, default=80, help="bytes read in MB (default 80 · 0 = no cap)")
+    ap.add_argument("--max-scan", type=int, default=3000, help="files stat'ed (default 3000 · 0 = no cap)")
+    ap.add_argument("--from", dest="w_from", default=None, help="window start (epoch or 'YYYY-MM-DD HH:MM[:SS]')")
+    ap.add_argument("--to", dest="w_to", default=None, help="window end")
+    ap.add_argument("--split", default=None, help="compare before/after this moment")
+    ap.add_argument("--runtime", default="all", choices=["all", "pi", "codex"])
+    ap.add_argument("--limit", type=float, default=70.0, help="'over the limit' threshold in seconds (default 70)")
+    ap.add_argument("--out", default=DEFAULT_OUT, help="html folder (default ~/.cache/ctx-burn/time)")
+    ap.add_argument("--no-html", action="store_true", help="write nothing")
+    ap.add_argument("--json", action="store_true", help="machine readable (contract ctx-time.v1)")
+    ap.add_argument("--lang", choices=["en", "ko"], default="en", help="output language (default en)")
+    o = ap.parse_args()
+    S, L = STR[o.lang], o.lang
+
+    def moment(x):
+        if x is None:
+            return None
+        try:
+            return float(x)
+        except ValueError:
+            pass
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M:%S"):
+            try:
+                return datetime.strptime(x, fmt).timestamp()
+            except ValueError:
+                continue
+        raise SystemExit("ctx-time: cannot read the moment %r (use epoch or 'YYYY-MM-DD HH:MM[:SS]')" % x)
+
+    now = time.time()
+    w_to = moment(o.w_to) or now
+    w_from = moment(o.w_from) or (w_to - o.hours * 3600)
+    if w_from >= w_to:
+        raise SystemExit("ctx-time: window is empty (--from is not before --to)")
+    split = moment(o.split)
+    if split is not None and not (w_from < split < w_to):
+        print(S["split_out"])
+        return 2
+
+    runtimes = ["pi", "codex"] if o.runtime == "all" else [o.runtime]
+    budget = Budget(o.max_mb)
+    files = list_files(runtimes)
+    keep, scan_cut = scan_window(files, o.max_scan, w_from, w_to)
+    picked, cut = pick(keep, o, budget)
+
+    res, grown = [], 0
+    notes = []
+    if scan_cut:
+        notes.append(S["trim_scan"] % (scan_cut, o.max_scan))
+    if cut["name"]:
+        notes.append(S["trim_name"] % (cut["name"], mb(budget.limit), mb(budget.name_limit)))
+    if cut["sessions"]:
+        notes.append(S["trim_sample"] % (cut["sessions"], o.max_sessions))
+    if cut["mb"]:
+        notes.append(S["trim_mb"] % (cut["mb"], mb(budget.limit)))
+
+    for rt, path, nm, role, cap in picked:
+        try:
+            lines, got, truncated = read_lines(path, cap)
+        except OSError:
+            continue
+        budget.spent += got - cap          # 실제로 읽은 바이트로 장부를 맞춘다(자라면 0 이하)
+        if truncated:
+            grown += 1
+        try:
+            rows = parse_pi(lines, w_from, w_to) if rt == "pi" else parse_codex(lines, w_from, w_to)
+        except OSError:
+            continue
+        if len(rows) < 4:
+            continue
+        r = fold(rows, nm, role, path, o.limit)
+        if r is None:
+            continue
+        r["runtime"] = rt
+        r["rows"] = rows
+        res.append(adjust_codex(r) if rt == "codex" else r)
+
+    if grown:                                   # 읽는 동안 자란 로그는 조용히 넘기지 않는다
+        notes.append(S["trim_grow"] % grown)
+
+    meta = {"hours": (w_to - w_from) / 3600.0, "from": w_from, "to": w_to, "notes": notes, "html": None}
+    if split is not None:
+        meta["split_from"] = w_from
+        meta["split_label"] = time.strftime("%m-%d %H:%M", time.localtime(split))
+        meta["split"] = split
+
+    if o.json:
+        def clean(r):
+            return {k: v for k, v in r.items() if k not in ("rows", "segs", "toolsum")}
+        out = {"schema": "ctx-time.v1", "window": {"from": w_from, "to": w_to, "hours": meta["hours"]},
+               "sample": {"files_listed": len(files), "files_scanned": len(keep), "scan_cut": scan_cut,
+                          "name_unseen": cut["name"], "sessions_dropped": cut["sessions"],
+                          "mb_dropped": cut["mb"], "read_truncated": grown,
+                          "read_bytes": budget.spent},
+               "notes": notes, "sessions": [clean(r) for r in res], "totals": totals(res),
+               "omitted": ["claude", "codex:model_error_retry"]}
+        if split is not None:
+            out["split"] = {"at": split, "before": totals(for_split(res, w_from, split, o.limit)),
+                            "after": totals(for_split(res, split, w_to, o.limit))}
+        print(json.dumps(out, ensure_ascii=False, indent=1))
+        return 0
+
+    if not res:
+        print(S["head"] % ("%g" % meta["hours"], 0, 0, 0, hm(0), time.strftime("%Y-%m-%d %H:%M")))
+        for n in notes:
+            print(n)
+        print(S["omitted"])
+        return 0
+
+    html_path = None
+    if not o.no_html:
+        out_dir = os.path.expanduser(o.out)
+        os.makedirs(out_dir, exist_ok=True)
+        html_path = os.path.join(out_dir, "seat-time-compare.html" if split is not None else "seat-time.html")
+    meta["html"] = html_path
+    print(summary(res, meta, notes, o, S, L))
+    if split is not None:
+        before = for_split(res, w_from, split, o.limit)
+        after = for_split(res, split, w_to, o.limit)
+        print()
+        print(S["split_head"] % (time.strftime("%m-%d %H:%M", time.localtime(w_from)), meta["split_label"],
+                                 hm(work(totals(before))), hm(work(totals(after)))))
+        for k in ORDER:
+            b1 = share(before, k)
+            a1 = share(after, k)
+            if b1 or a1:
+                print("  %-16s %5.1f%% → %5.1f%%" % (k, b1, a1))
+    if split is not None and not o.no_html:
+        with open(html_path, "w", encoding="utf-8") as f:
+            f.write(render_compare(before, after, meta, S))
+    elif html_path:
+        with open(html_path, "w", encoding="utf-8") as f:
+            f.write(render(res, meta, L, S))
+    return 0
+
+
+def share(res, cat):
+    t = totals(res)
+    p = {"LLM 생성": t["llm"], "모델 오류 재시도": t["err"], IDLE: t["idle"], OTHER: t["other"]}
+    p.update(t["tool"])
+    return 100.0 * p.get(cat, 0.0) / work(t)
+
+
+def for_split(res, w_from, w_to, limit):
+    out = []
+    for r in res:
+        rows = [x for x in r["rows"] if w_from <= x[0] < w_to]
+        if not rows:
+            continue
+        f = fold(rows, r["seat"], r["role"], r["file"], limit)
+        if f is None:
+            continue
+        f["runtime"] = r.get("runtime")
+        out.append(adjust_codex(f) if f["runtime"] == "codex" else f)
+    return out
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,887 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TMM="$ROOT/core/bin/tmm"
+SCAN="$ROOT/core/libexec/seat-scan.sh"
+
+# (a) --help 는 exit 0 이고 출력에 tmm 이 있어야 한다
+help_out="$("$TMM" --help)"
+printf '%s\n' "$help_out" | grep -q 'tmm' || { echo 'FAIL: --help 출력에 tmm 없음'; exit 1; }
+
+# (b) 문법 검사 (4개 스크립트)
+bash -n "$TMM" "$SCAN" "$ROOT/install.sh" "$ROOT/uninstall.sh"
+
+# ---------- 격리 tmux 서버 (기본 소켓 절대 미접촉) ----------
+# tmm 은 tmux 를 PATH 에서 부르므로 격리는 TMUX_TMPDIR 환경변수로만 한다.
+# tmm 안에서 부르는 tmux 도 같은 env 를 상속해야 하니 매 호출을 env 로 감싼다.
+SOCK_DIR="$(mktemp -d)"
+tm()  { env -u TMUX TMUX_TMPDIR="$SOCK_DIR" tmux "$@"; }
+# TMPDIR 도 격리 — tmm 의 상태 파일(mode/auto/waitset/bell)과 캐시가 실사용본과 섞이지 않게
+# TMM_RUN 도 지운다 — 개발 셸에 export 된 수동 실험용 TMM_RUN 이 상속되면 상태 파일이 격리 밖으로 새어
+# (f) 가 «mode 파일 없음» 으로 실패한다 (2026-09-09 복원 세션 실측). 코드 결함이 아니라 환경 오염.
+tmm() { env -u TMUX -u TMM_RUN TMUX_TMPDIR="$SOCK_DIR" TMPDIR="$SOCK_DIR" TMM_SCAN="${TMM_SCAN_OVERRIDE:-$SCAN}" TMM_CACHE_TTL=0 TMM_CATEGORIES=/dev/null "$TMM" "$@"; }
+STATE="$SOCK_DIR/tmm-$(id -u)"
+EPC="$STATE/ep-$(cat "$ROOT/core/VERSION").cache"   # 0.9.2 — 좌석별 캐시는 버전별 파일(표시 규칙이 바뀐 뒤 옛 «?» 가 안 남게)
+cleanup() {
+  env -u TMUX TMUX_TMPDIR="$SOCK_DIR" tmux kill-server 2>/dev/null || true
+  rm -rf "$SOCK_DIR"
+}
+trap cleanup EXIT
+
+tm new-session -d -s TMM_VERIFY_A -x 80 -y 24
+# 셸 프롬프트가 자리잡을 시간
+sleep 0.5
+
+# (c) rows 출력에 TMM_VERIFY_A + 필드 3개(탭 구분)
+rows_out="$(tmm rows time)"
+printf '%s\n' "$rows_out" | grep -q 'TMM_VERIFY_A' || {
+  echo 'FAIL: rows 출력에 TMM_VERIFY_A 없음'; printf '%s\n' "$rows_out"; exit 1; }
+printf '%s\n' "$rows_out" | awk -F'\t' '/TMM_VERIFY_A/ && NF==3' | grep -q . || {
+  echo 'FAIL: TMM_VERIFY_A 행이 탭 3필드가 아님'
+  printf '%s\n' "$rows_out" | awk -F'\t' '/TMM_VERIFY_A/{print "NF="NF}'; exit 1; }
+
+# (d) ls VERIFY 는 한 줄 매치
+ls_out="$(tmm ls VERIFY)"
+[ "$(printf '%s\n' "$ls_out" | grep -c 'TMM_VERIFY_A')" -eq 1 ] || {
+  echo 'FAIL: ls VERIFY 매치가 1줄이 아님'; printf '%s\n' "$ls_out"; exit 1; }
+
+# (e) s TMM_VERIFY_A ping — 셸-only 좌석이라 차단(exit 1) + "차단" 문구,
+#     그리고 pane 에 ping 이 타이핑되지 않아야 한다.
+set +e
+send_out="$(tmm s TMM_VERIFY_A ping 2>&1)"; send_rc=$?
+set -e
+[ "$send_rc" -eq 1 ] || { echo "FAIL: send 가 exit 1 이 아님 (rc=$send_rc)"; printf '%s\n' "$send_out"; exit 1; }
+printf '%s\n' "$send_out" | grep -q '차단' || { echo 'FAIL: send 출력에 "차단" 문구 없음'; printf '%s\n' "$send_out"; exit 1; }
+pane="$(tm capture-pane -t '=TMM_VERIFY_A:' -p)"
+printf '%s\n' "$pane" | grep -q 'ping' && {
+  echo 'FAIL: 차단됐는데 pane 에 ping 이 타이핑됨'; printf '%s\n' "$pane"; exit 1; }
+
+# (f) 정렬 모드는 상태 파일에 남고 rows-cur 가 그것을 따른다 (^R·자동 갱신이 모드를 잃지 않게)
+tmm mode wait h
+[ "$(cat "$STATE/mode")" = "wait h" ] || { echo "FAIL: mode 파일이 'wait h' 가 아님: $(cat "$STATE/mode" 2>&1)"; exit 1; }
+tmm rows-cur | grep -q 'TMM_VERIFY_A' && { echo 'FAIL: 대기만(h) 모드인데 IDLE 좌석이 rows-cur 에 나옴'; exit 1; }
+tmm mode time
+tmm rows-cur | grep -q 'TMM_VERIFY_A' || { echo 'FAIL: time 모드 rows-cur 에 TMM_VERIFY_A 없음'; exit 1; }
+
+# (g) ^U 는 «미리보기» 주기만 순환: 1 → 5 → 10 → 15 → 1 (off 없음). 전좌석 주기는 20 고정, 헤더에 둘 다 표시
+rm -f "$STATE/auto"
+tmm header | grep -q 'pane 1s 전체 20s' || { echo "FAIL: 기본 헤더가 pane 1s 전체 20s 아님"; tmm header; exit 1; }
+[ "$(tmm auto-cycle)" = 5 ]  || { echo "FAIL: auto-cycle 1→5 아님"; exit 1; }
+[ "$(tmm auto-cycle)" = 10 ] || { echo "FAIL: auto-cycle 5→10 아님"; exit 1; }
+[ "$(tmm auto-cycle)" = 15 ] || { echo "FAIL: auto-cycle 10→15 아님"; exit 1; }
+[ "$(tmm auto-cycle)" = 1 ]  || { echo "FAIL: auto-cycle 15→1 아님 (off 가 끼어들었나)"; exit 1; }
+tmm header | grep -q 'pane 1s' || { echo "FAIL: 한 바퀴 돌면 pane 1s 로 돌아와야 한다"; tmm header; exit 1; }
+[ "$(TMM_AUTO=30 tmm header | grep -o '전체 [0-9]*s')" = '전체 30s' ] || { echo "FAIL: TMM_AUTO 가 전체 에 반영 안 됨"; exit 1; }
+rm -f "$STATE/auto"   # 상태 파일이 env 보다 우선 — TUI 진입 시 env 로 다시 쓰므로 여기선 지우고 잰다
+[ "$(TMM_AUTO_PREVIEW=0 tmm header | grep -o 'pane [a-z0-9]*')" = 'pane off' ] || { echo "FAIL: TMM_AUTO_PREVIEW=0 인데 pane off 아님"; exit 1; }
+
+# (j) 헤더는 폰 60열에서 잘리지 않아야 한다 — fzf 는 헤더를 줄바꿈 없이 자르므로 각 줄 표시폭(동아시아 W/F=2) ≤ 60
+for a in 0 15 dead; do
+  if [ "$a" = dead ]; then tmm view dead >/dev/null; printf '24\n' > "$STATE/since"; else tmm view live >/dev/null; printf '%s\n' "$a" > "$STATE/auto"; fi
+  tmm header | python3 -c '
+import sys, re, unicodedata
+bad = [(len_, l) for raw in sys.stdin.read().splitlines()
+       for l in [re.sub(r"\x1b\[[0-9;]*m", "", raw)]
+       for len_ in [sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in l)] if len_ > 58]
+for w, l in bad: print(f"FAIL: 헤더 {w}열 > 58 (fzf 들여쓰기 2 포함 60): {l}")
+sys.exit(1 if bad else 0)' || exit 1
+done
+tmm view live >/dev/null; rm -f "$STATE/since"
+
+# (h) 벨 플래그: 직전 스캔 대비 «새로» HUMAN/BLOCK/STUCK 이 된 좌석이 있을 때만 bell 파일 생성
+printf '#!/usr/bin/env bash\necho "TMM_VERIFY_A IDLE"\n'  > "$SOCK_DIR/scan-idle.sh"
+printf '#!/usr/bin/env bash\necho "TMM_VERIFY_A HUMAN"\n' > "$SOCK_DIR/scan-human.sh"
+rm -f "$STATE/waitset" "$STATE/bell"
+TMM_SCAN_OVERRIDE="$SOCK_DIR/scan-human.sh" tmm rows time >/dev/null
+[ -f "$STATE/bell" ] && { echo 'FAIL: 첫 스캔(비교 대상 없음)인데 bell 생성됨'; exit 1; }
+TMM_SCAN_OVERRIDE="$SOCK_DIR/scan-idle.sh" tmm rows time >/dev/null
+[ -f "$STATE/bell" ] && { echo 'FAIL: HUMAN→IDLE 인데 bell 생성됨'; exit 1; }
+TMM_SCAN_OVERRIDE="$SOCK_DIR/scan-human.sh" tmm rows time >/dev/null
+[ -f "$STATE/bell" ] || { echo 'FAIL: IDLE→HUMAN 인데 bell 없음'; exit 1; }
+
+# (i) 소켓 post: 격리 세션 안의 fzf --listen 에 액션을 쏘면 화면이 바뀐다 (핑거가 쓰는 경로)
+tm send-keys -t '=TMM_VERIFY_A:' -l "fzf --listen=$SOCK_DIR/t.sock --prompt='P> ' </dev/null"
+tm send-keys -t '=TMM_VERIFY_A:' Enter
+for _ in 1 2 3 4 5 6 7 8 9 10; do [ -S "$SOCK_DIR/t.sock" ] && break; sleep 0.3; done
+[ -S "$SOCK_DIR/t.sock" ] || { echo 'FAIL: fzf --listen 소켓이 안 생김'; exit 1; }
+tmm __post "$SOCK_DIR/t.sock" 'change-prompt(ZZ> )'
+sleep 0.5
+tm capture-pane -t '=TMM_VERIFY_A:' -p | grep -q 'ZZ>' || { echo 'FAIL: post 한 change-prompt 가 화면에 반영 안 됨'; tm capture-pane -t '=TMM_VERIFY_A:' -p; exit 1; }
+tm send-keys -t '=TMM_VERIFY_A:' Escape
+
+# (k) 미리보기 렌더러 골든 — Claude 입력박스(구분선+❯)·statusline 제거, Codex 프롬프트 제거, 본문 표 구분선 보존, 색 유지, 연속 빈줄 1줄
+SEP="$(printf '─%.0s' $(seq 1 60))"
+render_in="$(printf '%b\n' \
+  '⏺ 첫 응답' '' '' '  Ran 1 shell command' "$SEP" '  표 아래 본문 — 구분선 뒤에 프롬프트가 없으니 자르면 안 됨' \
+  '\033[1m⏺ 굵은 응답\033[0m' '✻ Cooked for 3s · done 오후 10:41' \
+  "\033[38;2;136;136;136m${SEP} sess#1 ${SEP}\033[39m" '\033[38;2;153;153;153m❯ \033[39m' "$SEP" \
+  '  branch:main | !1' '  [OMC#5.3.0L] | Model: X' '  ⏵⏵ auto mode on')"
+render_out="$(printf '%s\n' "$render_in" | env -u TMUX "$TMM" __render)"
+plain="$(printf '%s\n' "$render_out" | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g')"
+printf '%s\n' "$plain" | grep -q '표 아래 본문' || { echo 'FAIL: 본문 속 표 구분선에서 잘림'; printf '%s\n' "$plain"; exit 1; }
+printf '%s\n' "$plain" | grep -qE '❯|branch:main|OMC#|auto mode' && { echo 'FAIL: 입력박스/statusline 이 남음'; printf '%s\n' "$plain"; exit 1; }
+[ "$(printf '%s\n' "$plain" | tail -1)" = '✻ Cooked for 3s · done 오후 10:41' ] || { echo 'FAIL: 마지막 줄이 완료 마커가 아님'; printf '%s\n' "$plain"; exit 1; }
+blank_n="$(printf '%s\n' "$render_in" | env -u TMUX "$TMM" __render | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' | grep -c '^$')"
+[ "$blank_n" -eq 1 ] || { echo "FAIL: 연속 빈 줄이 1줄로 안 눌림 (blank=$blank_n)"; printf '%s\n' "$plain"; exit 1; }
+printf '%s\n' "$render_out" | LC_ALL=C grep -aq $'\x1b\[1m' || { echo 'FAIL: SGR 색 코드가 사라짐'; exit 1; }
+codex_out="$(printf '%s\n' '• Ran rg foo' '' '› Ask Codex to do anything' '' '  gpt-6 high · main · Context 31% left' | env -u TMUX "$TMM" __render)"
+[ "$codex_out" = '• Ran rg foo' ] || { echo 'FAIL: Codex 프롬프트 이하가 안 잘림'; printf '%s\n' "$codex_out"; exit 1; }
+
+# ---------- (l)(m)(n) 종료된 세션 뷰 + 복구 ----------
+# 스캐너가 픽스처 HOME 만 보게 env 로 글롭을 갈아끼운다(스캐너 상단이 이 env 를 읽는다).
+# find_transcript 가 경로의 /.claude//.codex/ 로 agent 를 가르므로 픽스처 경로에 그 세그먼트를 둔다.
+FIX="$SOCK_DIR/home"; DEAD_RUN="$SOCK_DIR/dead-run"; mkdir -p "$FIX" "$DEAD_RUN"
+SID_CC="AAAA1111-2222-3333-4444-555566667777"
+SID_CC2="AAAA2222-2222-3333-4444-555566667777"
+SID_ARCH="AAAA3333-2222-3333-4444-555566667777"
+SID_CDX="bbbbbbbb-1111-2222-3333-444455556666"
+SID_CMD="cccccccc-1111-2222-3333-444455556666"
+SNAP_FIX="$FIX/nosnap.json"; RTRIES=20   # (n) 에서 snap.json·3 으로 바꾼다
+dtmm() {
+  env -u TMUX TMUX_TMPDIR="$SOCK_DIR" TMPDIR="$SOCK_DIR" \
+      TMM_RUN="$DEAD_RUN" TMM_CACHE_TTL=0 TMM_CATEGORIES=/dev/null \
+      TMM_MODELS="$ROOT/core/models.example" TMM_FORKS="$SOCK_DIR/forks" \
+      TMUXC_CLAUDE_PROJECTS="$FIX/.claude/projects" \
+      TMM_CLAUDE_GLOB="$FIX/.claude/projects/*/*.jsonl" \
+      TMM_CODEX_GLOB="$FIX/.codex/sessions/*/*/*/rollout-*.jsonl" \
+      TMM_CMD_GLOB="$FIX/.commandcode/projects/*/*.jsonl" \
+      TMM_OPENCODE_DB=/nonexistent TMM_SNAPSHOT="$SNAP_FIX" \
+      TMM_RESTORE_TRIES="$RTRIES" \
+      "$TMM" "$@"
+}
+
+# 픽스처 3종(claude 신·구세대+fable, codex, cmd) 생성. mtime 은 라이브 유예(90s) 밖 과거로.
+python3 - "$FIX" "$SID_CC" "$SID_CC2" "$SID_ARCH" "$SID_CDX" "$SID_CMD" "$FIX" <<'PY'
+import json, os, sys, time
+from datetime import datetime, timezone
+FIX, sid_cc, sid_cc2, sid_arch, sid_cdx, sid_cmd, cwd = sys.argv[1:8]
+def iso(delta): return datetime.fromtimestamp(time.time()-delta, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+def wl(path, records, delta):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        for r in records: f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    os.utime(path, (time.time()-delta, time.time()-delta))
+H1, H20 = 3600, 72000
+wl(os.path.join(FIX, ".claude/projects/-x", sid_cc + ".jsonl"), [
+    {"type": "agent-name", "agentName": "ft-fx-impl#3"},
+    {"type": "user", "cwd": cwd, "timestamp": iso(H1), "message": {"content": "hello"}},
+    {"type": "assistant", "timestamp": iso(H1), "message": {"model": "claude-sonnet-5", "content": [{"type": "text", "text": "LAST ANSWER"}]}}], H1)
+wl(os.path.join(FIX, ".claude/projects/-x", sid_cc2 + ".jsonl"), [
+    {"type": "agent-name", "agentName": "ft-fx-impl#2"},
+    {"type": "user", "cwd": cwd, "timestamp": iso(H1), "message": {"content": "old"}},
+    {"type": "assistant", "timestamp": iso(H1), "message": {"model": "claude-sonnet-5", "content": [{"type": "text", "text": "OLD ANSWER"}]}}], H1)
+wl(os.path.join(FIX, ".claude/projects/-x", sid_arch + ".jsonl"), [
+    {"type": "agent-name", "agentName": "ft-fx-arch#0"},
+    {"type": "user", "cwd": cwd, "timestamp": iso(H20), "message": {"content": "arch"}},
+    {"type": "assistant", "timestamp": iso(H20), "message": {"model": "claude-fable-5-2", "content": [{"type": "text", "text": "ARCH ANSWER"}]}}], H20)
+wl(os.path.join(FIX, ".codex/sessions/2026/09/09", "rollout-2026-09-09T00-00-00-" + sid_cdx + ".jsonl"), [
+    {"type": "session_meta", "timestamp": iso(H1), "payload": {"session_id": sid_cdx, "cwd": cwd, "source": "cli"}},
+    {"type": "response_item", "timestamp": iso(H1), "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "[ORCH→ft-fx-codex#1] hi"}]}},
+    {"type": "response_item", "timestamp": iso(H1), "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "CODEX LAST"}]}}], H1)
+pm = os.path.join(FIX, ".commandcode/projects/-x", sid_cmd + ".jsonl")
+wl(pm, [
+    {"type": "session", "id": sid_cmd, "cwd": cwd, "timestamp": iso(H1)},
+    {"type": "message", "timestamp": iso(H1), "message": {"role": "user", "content": "cmd hi"}},
+    {"type": "message", "timestamp": iso(H1), "message": {"role": "assistant", "content": "CMD LAST"}}], H1)
+with open(pm[:-6] + ".meta.json", "w", encoding="utf-8") as f:
+    json.dump({"title": "ft-fx-cmd#0", "userRenamed": True}, f)
+with open(os.path.join(FIX, "snap.json"), "w", encoding="utf-8") as f:
+    json.dump({"sessions": [{"name": "ft-fx-impl#3", "session_id": sid_cc,
+        "resume_cmd": "printf 'ctx:0%% ❯ \\n'; sleep 20", "model": "claude-sonnet-5"}]}, f, ensure_ascii=False)
+PY
+
+# (l) 스캐너·계보·창(since) — 기본(since=12, latest gen)
+dr="$(dtmm dead-rows time)"
+for want in 'ft-fx-impl#3' 'ft-fx-codex#1' 'ft-fx-cmd#0'; do
+  printf '%s\n' "$dr" | grep -q "$want" || { echo "FAIL: (l) dead-rows 에 $want 없음"; printf '%s\n' "$dr"; exit 1; }
+done
+printf '%s\n' "$dr" | grep -q 'ft-fx-impl#2' && { echo 'FAIL: (l) latest gen 인데 구세대 ft-fx-impl#2 가 나옴'; printf '%s\n' "$dr"; exit 1; }
+printf '%s\n' "$dr" | grep -q 'ft-fx-arch#0' && { echo 'FAIL: (l) since=12 인데 20h 짜리 ft-fx-arch#0 이 나옴'; printf '%s\n' "$dr"; exit 1; }
+printf '%s\n' "$dr" | grep 'ft-fx-impl#3' | grep -q ' CC ' || { echo 'FAIL: (l) ft-fx-impl#3 배지가 CC 가 아님'; printf '%s\n' "$dr"; exit 1; }
+printf '%s\n' "$dr" | grep 'ft-fx-codex#1' | grep -q ' CDX ' || { echo 'FAIL: (l) ft-fx-codex#1 배지가 CDX 가 아님'; printf '%s\n' "$dr"; exit 1; }
+printf '%s\n' "$dr" | grep 'ft-fx-cmd#0' | grep -q ' CMD ' || { echo 'FAIL: (l) ft-fx-cmd#0 배지가 CMD 가 아님'; printf '%s\n' "$dr"; exit 1; }
+printf '%s\n' "$dr" | awk -F'\t' '/ft-fx-impl#3/ && NF==3' | grep -q . || {
+  echo 'FAIL: (l) dead-rows 행이 탭 3필드가 아님'
+  printf '%s\n' "$dr" | awk -F'\t' '/ft-fx-impl#3/{print "NF="NF}'; exit 1; }
+# 계보 전체(gen all) 로 바꾸면 구세대도 나온다
+dtmm gen >/dev/null
+dtmm dead-rows time | grep -q 'ft-fx-impl#2' || { echo 'FAIL: (l) gen all 인데 ft-fx-impl#2 가 안 나옴'; dtmm dead-rows time; exit 1; }
+# 창을 24h 로 넓히면 20h 짜리 arch 가 들어온다
+dtmm since 24 >/dev/null
+dtmm dead-rows time | grep -q 'ft-fx-arch#0' || { echo 'FAIL: (l) since=24 인데 ft-fx-arch#0 이 안 나옴'; dtmm dead-rows time; exit 1; }
+
+# (m) 미리보기(dp)·복구 커맨드 합성(dry-run)
+dp_out="$(dtmm dp 'ft-fx-impl#3' 5 | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g')"
+printf '%s\n' "$dp_out" | grep -q 'LAST ANSWER' || { echo 'FAIL: (m) dp 출력에 LAST ANSWER 없음'; printf '%s\n' "$dp_out"; exit 1; }
+printf '%s\n' "$dp_out" | grep -q '✻ done' || { echo 'FAIL: (m) dp 출력에 완료 마커(✻ done) 없음'; printf '%s\n' "$dp_out"; exit 1; }
+r_impl="$(dtmm restore 'ft-fx-impl#3' --dry-run)"
+printf '%s\n' "$r_impl" | grep -qF 'claude-sonnet-5[1m]' || { echo 'FAIL: (m) claude 복구 cmd 에 claude-sonnet-5[1m] 없음'; printf '%s\n' "$r_impl"; exit 1; }
+printf '%s\n' "$r_impl" | grep -qF -- '--effort high' || { echo 'FAIL: (m) claude 복구 cmd 에 --effort high 없음'; printf '%s\n' "$r_impl"; exit 1; }
+printf '%s\n' "$r_impl" | grep -qF -- "--resume $SID_CC" || { echo 'FAIL: (m) claude 복구 cmd 에 --resume <sid> 없음'; printf '%s\n' "$r_impl"; exit 1; }
+r_arch="$(dtmm restore 'ft-fx-arch#0' --dry-run)"
+printf '%s\n' "$r_arch" | grep -qF 'claude-fable-5-2"' || { echo 'FAIL: (m) fable 복구 cmd 모델이 claude-fable-5-2 아님'; printf '%s\n' "$r_arch"; exit 1; }
+printf '%s\n' "$r_arch" | grep -qF '[1m]' && { echo 'FAIL: (m) fable 복구 cmd 에 [1m] 이 붙음(붙으면 안 됨)'; printf '%s\n' "$r_arch"; exit 1; }
+r_cdx="$(dtmm restore 'ft-fx-codex#1' --dry-run)"
+printf '%s\n' "$r_cdx" | grep -qF "resume $SID_CDX" || { echo 'FAIL: (m) codex 복구 cmd 에 resume <sid> 없음'; printf '%s\n' "$r_cdx"; exit 1; }
+
+# (n) 실복구 — 스냅샷 resume_cmd(가짜 명령) 를 격리 tmux 에 그대로 주입. claude 를 실제로 띄우지 않는다.
+SNAP_FIX="$FIX/snap.json"; RTRIES=3
+dtmm restore 'ft-fx-impl#3' </dev/null >"$SOCK_DIR/restore.out" 2>&1 || true
+tm has-session -t '=ft-fx-impl#3' 2>/dev/null || { echo 'FAIL: (n) 복구 후 ft-fx-impl#3 세션이 없음'; cat "$SOCK_DIR/restore.out"; exit 1; }
+npane="$(tm capture-pane -t '=ft-fx-impl#3:' -p 2>/dev/null)"
+printf '%s\n' "$npane" | grep -q 'sleep 20' || { echo 'FAIL: (n) pane 에 resume_cmd(sleep 20) 가 안 보임'; printf '%s\n' "$npane"; exit 1; }
+printf '%s\n' "$npane" | grep -q '\[restore→ft-fx-impl#3\]' || { echo 'FAIL: (n) pane 에 claude 복원 안내가 안 보임'; printf '%s\n' "$npane"; exit 1; }
+tm kill-session -t 'ft-fx-impl#3' 2>/dev/null || true
+
+# (o) 일괄 복구 — 창 안 «전부». dry-run 은 건수·커맨드만, 실행은 스냅샷 픽스처를 impl#3·codex#1 두 건으로 넓혀
+#     둘 다 가짜 resume_cmd 로 격리 tmux 에 뜨는지 + 이미 살아있는 건 ⏭ 로 건너뛰는지 + 집계 줄.
+csid_real="$(grep -o '"session_id": *"[^"]*"' "$FIX"/.codex/sessions/2026/09/09/rollout-*.jsonl | head -1 | sed 's/.*: *"//;s/"//')"
+python3 - "$FIX" "$csid_real" <<'PY'
+import json, os, sys
+FIX, csid = sys.argv[1], sys.argv[2]
+p = os.path.join(FIX, "snap.json"); snap = json.load(open(p))
+snap["sessions"] = [x for x in snap["sessions"] if x["name"] != "ft-fx-codex#1"]
+snap["sessions"].append({"name": "ft-fx-codex#1", "session_id": csid, "resume_cmd": "printf 'ctx:0%% ❯ \\n'; sleep 20", "model": ""})
+json.dump(snap, open(p, "w"), ensure_ascii=False)
+PY
+dry="$(dtmm restore-all --dry-run 2>&1)"   # 조용히 — 검사만
+n_dry="$(printf '%s\n' "$dry" | grep -c '^session=')"
+[ "$n_dry" -ge 3 ] || { echo "FAIL: (o) restore-all --dry-run 건수 $n_dry < 3"; printf '%s\n' "$dry"; exit 1; }
+printf '%s\n' "$dry" | grep -qE '일괄 복구: 창 [0-9]+h' || { echo 'FAIL: (o) dry-run 헤더에 창 표시 없음'; printf '%s\n' "$dry"; exit 1; }
+# 실행: impl#3 을 먼저 살려 두어 ⏭ 경로를 만든다
+tm new-session -d -s 'ft-fx-impl#3' -x 80 -y 24 'sleep 30'
+out="$(dtmm restore-all --yes </dev/null 2>&1 || true)"
+# 살아있는 세션(impl#3)은 스캐너 --live 로 목록에서 제외되므로 복구 대상에 나타나면 안 된다
+printf '%s\n' "$out" | grep -q '✅ ft-fx-impl#3' && { echo 'FAIL: (o) 살아있는 impl#3 을 다시 복구했다'; printf '%s\n' "$out"; exit 1; }
+tm has-session -t '=ft-fx-codex#1' 2>/dev/null || { echo 'FAIL: (o) 일괄 복구 후 ft-fx-codex#1 세션 없음'; printf '%s\n' "$out"; exit 1; }
+tm capture-pane -t '=ft-fx-codex#1:' -p | grep -q 'sleep 20' || { echo 'FAIL: (o) codex#1 pane 에 resume_cmd 없음'; exit 1; }
+printf '%s\n' "$out" | grep -qE '── 완료: ✅ [0-9]+ +❌ [0-9]+ +/ [0-9]+' || { echo 'FAIL: (o) 집계 줄 없음'; printf '%s\n' "$out"; exit 1; }
+tm kill-session -t 'ft-fx-impl#3' 2>/dev/null || true; tm kill-session -t 'ft-fx-codex#1' 2>/dev/null || true
+for x in ft-fx-cmd#0 ft-fx-arch#0; do tm kill-session -t "$x" 2>/dev/null || true; done
+
+# (p) attach 는 창 옵션 window-size(manual) 를 풀고 붙는다 — 좌석들의 `resize-window -x 200 → 원복` 관행이 남긴 manual 때문에
+#     폰(64x66)이 붙어도 80x24 에 갇히던 증상. 진짜 pty 로 attach 해 창이 클라이언트 크기를 따르는지 잰다. -i 는 안 건드린다.
+tm new-session -d -s TMM_WS -c /tmp
+tm resize-window -t '=TMM_WS:' -x 200; tm resize-window -t '=TMM_WS:' -x 80
+[ "$(tm show -wv -t '=TMM_WS:' window-size)" = manual ] || { echo 'FAIL: (p) 전제 — resize-window 원복 뒤 manual 이 아님 (tmux 동작 변경?)'; exit 1; }
+TMUX_TMPDIR="$SOCK_DIR" TMM_BIN="$TMM" python3 - <<'PY' || exit 1
+import os, pty, time, fcntl, termios, struct, subprocess, signal, sys
+env = {k: v for k, v in os.environ.items() if k != 'TMUX'}
+def R(*a): return subprocess.run(['tmux', *a], capture_output=True, text=True, env=env).stdout.strip()
+def go(args, cols, rows):
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.execvpe(args[0], args, env)
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack('HHHH', rows, cols, 0, 0))
+    time.sleep(1.5); out = (R('show', '-wv', '-t', '=TMM_WS:', 'window-size'), R('display', '-p', '-t', '=TMM_WS:', '#{window_width}'))
+    R('detach-client', '-s', 'TMM_WS'); time.sleep(0.4)
+    try: os.kill(pid, signal.SIGKILL)
+    except OSError: pass
+    return out
+o, w = go([env['TMM_BIN'], 'a', 'TMM_WS'], 64, 30)
+if o != '' or w != '64': print(f"FAIL: (p) tmm a 뒤 opt='{o}' width={w} (기대 opt='' width=64)"); sys.exit(1)
+R('resize-window', '-t', '=TMM_WS:', '-x', '80')                      # 다시 manual 로
+o, w = go([env['TMM_BIN'], 'a', 'TMM_WS', '-i'], 64, 30)
+if o != 'manual': print(f"FAIL: (p) -i 인데 window-size 를 건드림 opt='{o}'"); sys.exit(1)
+PY
+tm kill-session -t TMM_WS
+
+# (q) 좌석 종료(^K) — 대상은 죽고, 피커 자신은 거부된다
+tm new-session -d -s TMM_KILL_ME 'sleep 60'
+sleep 0.4
+tmm kill TMM_KILL_ME --yes >/dev/null 2>&1
+if tm has-session -t '=TMM_KILL_ME' 2>/dev/null; then echo 'FAIL: (q) kill 했는데 세션이 남아있다'; exit 1; fi
+tm new-session -d -s TMM_SELF 'sleep 60'
+sleep 0.4
+self_out="$(env -u TMUX -u TMM_RUN TMUX_TMPDIR="$SOCK_DIR" TMPDIR="$SOCK_DIR" TMM_SESSION=TMM_SELF \
+  TMM_SCAN="${TMM_SCAN_OVERRIDE:-$SCAN}" TMM_CACHE_TTL=0 TMM_CATEGORIES=/dev/null "$TMM" kill TMM_SELF --yes 2>&1 || true)"
+printf '%s\n' "$self_out" | grep -q '피커 자신' || { echo 'FAIL: (q) 피커 자신을 닫으려는데 거부하지 않았다'; printf '%s\n' "$self_out"; exit 1; }
+tm has-session -t '=TMM_SELF' 2>/dev/null || { echo 'FAIL: (q) 거부했는데 피커 세션이 죽었다'; exit 1; }
+# 피커 세션은 좌석 목록에도 안 나온다
+self_rows="$(env -u TMUX -u TMM_RUN TMUX_TMPDIR="$SOCK_DIR" TMPDIR="$SOCK_DIR" TMM_SESSION=TMM_SELF \
+  TMM_SCAN="${TMM_SCAN_OVERRIDE:-$SCAN}" TMM_CACHE_TTL=0 TMM_CATEGORIES=/dev/null "$TMM" rows time 2>/dev/null || true)"
+if printf '%s\n' "$self_rows" | grep -q 'TMM_SELF'; then echo 'FAIL: (q) 피커 자신이 좌석 목록에 나온다'; exit 1; fi
+tm kill-session -t TMM_SELF 2>/dev/null || true
+
+# (r) 대화 기록 인덱스 (idx) — 라이브(이름+cwd)와 종료(sid) 공통 해석, --path/--json
+LIVESLUG="$(python3 -c 'import re,sys;print(re.sub(r"[/.]","-",sys.argv[1]))' "$FIX")"
+python3 - "$FIX" "$LIVESLUG" <<'PY'
+import json, os, sys
+FIX, slug = sys.argv[1], sys.argv[2]
+p = os.path.join(FIX, ".claude/projects", slug, "11111111-2222-3333-4444-555566667777.jsonl")
+os.makedirs(os.path.dirname(p), exist_ok=True)
+recs = [{"type": "agent-name", "agentName": "TMM_IDX_LIVE#0"},
+        {"type": "user", "cwd": FIX, "timestamp": "2026-09-19T00:00:00.000Z", "message": {"content": "hi"}},
+        {"type": "assistant", "timestamp": "2026-09-19T00:00:00.000Z",
+         "message": {"model": "claude-sonnet-5", "content": [{"type": "text", "text": "LIVE ANSWER"}]}}]
+open(p, "w", encoding="utf-8").write("\n".join(json.dumps(r, ensure_ascii=False) for r in recs) + "\n")
+PY
+tm new-session -d -s 'TMM_IDX_LIVE#0' -c "$FIX"
+sleep 0.4
+idx_live="$(dtmm idx 'TMM_IDX_LIVE#0')"
+printf '%s\n' "$idx_live" | grep -q '11111111-2222-3333-4444-555566667777' || { echo 'FAIL: (r) 라이브 idx 가 fixture sid 를 못 찾음'; printf '%s\n' "$idx_live"; exit 1; }
+printf '%s\n' "$idx_live" | grep -q 'agent:      claude' || { echo 'FAIL: (r) 라이브 idx agent≠claude'; printf '%s\n' "$idx_live"; exit 1; }
+idx_path="$(dtmm idx 'TMM_IDX_LIVE#0' --path)"
+printf '%s\n' "$idx_path" | grep -qF -- "$LIVESLUG" || { echo 'FAIL: (r) idx --path 가 슬러그 경로 아님'; printf '%s\n' "$idx_path"; exit 1; }
+idx_json="$(dtmm idx 'TMM_IDX_LIVE#0' --json)"
+printf '%s\n' "$idx_json" | python3 -c 'import json,sys;d=json.load(sys.stdin);assert d["session_id"]=="11111111-2222-3333-4444-555566667777" and d["agent"]=="claude"' || { echo 'FAIL: (r) idx --json 파싱/필드 오류'; printf '%s\n' "$idx_json"; exit 1; }
+tm kill-session -t 'TMM_IDX_LIVE#0' 2>/dev/null || true
+idx_dead="$(dtmm idx 'ft-fx-impl#3')"
+printf '%s\n' "$idx_dead" | grep -q "$SID_CC" || { echo 'FAIL: (r) 종료 claude idx 가 sid 를 못 찾음'; printf '%s\n' "$idx_dead"; exit 1; }
+printf '%s\n' "$idx_dead" | grep -q 'agent:      claude' || { echo 'FAIL: (r) 종료 claude idx agent≠claude'; printf '%s\n' "$idx_dead"; exit 1; }
+idx_cmd="$(dtmm idx 'ft-fx-cmd#0')"
+printf '%s\n' "$idx_cmd" | grep -q 'agent:      cmd' || { echo 'FAIL: (r) cmd 종료 idx 가 claude 로 오분류'; printf '%s\n' "$idx_cmd"; exit 1; }
+dtmm idx 'NO_SUCH_SEAT#99' >/dev/null 2>&1 && { echo 'FAIL: (r) 없는 세션 idx 가 성공함'; exit 1; }
+
+# (s) fork — dry-run 만 (실제 CLI 미호출). 동일엔진=네이티브 fork, 크로스엔진=open+주입, 이름 #N+1.
+f_same="$(dtmm fork 'ft-fx-impl#3' --agent claude --model sonnet --dry-run 2>&1 || true)"
+printf '%s\n' "$f_same" | grep -qF -- '--fork-session' || { echo 'FAIL: (s) 동일엔진 fork 에 --fork-session 없음'; printf '%s\n' "$f_same"; exit 1; }
+printf '%s\n' "$f_same" | grep -qF -- "--resume $SID_CC --fork-session" || { echo 'FAIL: (s) 동일엔진 fork 가 소스 sid 로 분기 안 함'; printf '%s\n' "$f_same"; exit 1; }
+printf '%s\n' "$f_same" | grep -qF 'claude-sonnet-5-5[1m]' || { echo 'FAIL: (s) claude fork 모델 [1m] 규칙 아님(sonnet 별칭→5.5)'; printf '%s\n' "$f_same"; exit 1; }
+printf '%s\n' "$f_same" | grep -q 'name=ft-fx-impl#4' || { echo 'FAIL: (s) 이름 자동증가(#3→#4) 아님'; printf '%s\n' "$f_same"; exit 1; }
+f_cross="$(dtmm fork 'ft-fx-impl#3' --agent codex --model astra --dry-run 2>&1 || true)"
+printf '%s\n' "$f_cross" | grep -qF 'gpt-6-astra' || { echo 'FAIL: (s) 크로스엔진 codex 모델 매핑 실패'; printf '%s\n' "$f_cross"; exit 1; }
+printf '%s\n' "$f_cross" | grep -qF 'same_engine=0' || { echo 'FAIL: (s) 크로스엔진 판정 아님'; printf '%s\n' "$f_cross"; exit 1; }
+printf '%s\n' "$f_cross" | grep -qF -- '--fork-session' && { echo 'FAIL: (s) 크로스엔진인데 네이티브 fork 플래그가 붙음'; printf '%s\n' "$f_cross"; exit 1; }
+f_raw="$(dtmm fork 'ft-fx-impl#3' --agent opencode --model opencode/glm-5.3 --dry-run 2>&1 || true)"
+printf '%s\n' "$f_raw" | grep -qF 'opencode/glm-5.3' || { echo 'FAIL: (s) raw 모델 id 통과 실패'; printf '%s\n' "$f_raw"; exit 1; }
+dtmm fork 'ft-fx-impl#3' --agent omx --dry-run >/dev/null 2>&1 && { echo 'FAIL: (s) omx fork 가 거부되지 않음'; exit 1; }
+# 크로스엔진 실제 생성 경로의 발췌 파일 — dry-run 은 파일을 만들지 않아야 한다
+[ -e "$SOCK_DIR/forks" ] && [ -n "$(ls -A "$SOCK_DIR/forks" 2>/dev/null)" ] && { echo 'FAIL: (s) dry-run 인데 발췌 파일이 생성됨'; ls -la "$SOCK_DIR/forks"; exit 1; }
+
+# (t) 모델 소스 — 사용자 파일 + 생성본 병합(사용자 우선), refresh(정적), find
+UMOD="$SOCK_DIR/user-models"; GMOD="$SOCK_DIR/gen-models"
+printf 'opencode\tglm\topenrouter/z-ai/glm-5.3-flash\nopencode\tshared\topenrouter/USER-WINS\n' > "$UMOD"
+printf '# gen\nopencode\tshared\topenrouter/GEN-LOSES\nopencode\tdeepseek\topenrouter/deepseek/deepseek-v4.1-flash\n' > "$GMOD"
+mtmm() { env -u TMUX -u TMM_RUN TMUX_TMPDIR="$SOCK_DIR" TMPDIR="$SOCK_DIR" TMM_CACHE_TTL=0 TMM_CATEGORIES=/dev/null \
+  TMM_MODELS="$UMOD" TMM_MODELS_GEN="$GMOD" TMM_SCAN="${TMM_SCAN_OVERRIDE:-$SCAN}" "$TMM" "$@"; }
+mtmm models opencode | grep -q 'openrouter/USER-WINS' || { echo 'FAIL: (t) 사용자 별칭이 병합 안 됨'; mtmm models opencode; exit 1; }
+mtmm models opencode | grep -q 'GEN-LOSES' && { echo 'FAIL: (t) 사용자 우선이 아님(생성본이 덮음)'; mtmm models opencode; exit 1; }
+mtmm models opencode | grep -q 'openrouter/deepseek/deepseek-v4.1-flash' || { echo 'FAIL: (t) 생성본 별칭이 병합 안 됨'; mtmm models opencode; exit 1; }
+mtmm models find deepseek-v4.1 | grep -q 'deepseek-v4.1-flash' || { echo 'FAIL: (t) models find 실패'; mtmm models find deepseek-v4.1; exit 1; }
+# refresh(정적 에이전트만) — opencode/cmd CLI 미호출이라 결정적. 사용자 파일을 건드리지 않게 명시 경로로.
+RFGEN="$SOCK_DIR/refresh.tsv"
+python3 "$ROOT/core/libexec/tmm-models-sync.py" --out "$RFGEN" --agents claude >/dev/null 2>&1
+grep -qE '^claude\topus\tclaude-opus-5-5$' "$RFGEN" || { echo 'FAIL: (t) models refresh 정적 생성 실패(opus=5.5)'; cat "$RFGEN" 2>/dev/null; exit 1; }
+grep -qE '^claude\topus5\tclaude-opus-5$' "$RFGEN" || { echo 'FAIL: (t) opus5 별칭(구 Opus 5) 없음'; cat "$RFGEN" 2>/dev/null; exit 1; }
+grep -qE '^claude\tsonnet\tclaude-sonnet-5-5$' "$RFGEN" || { echo 'FAIL: (t) models refresh 정적 생성 실패(sonnet=5.5)'; cat "$RFGEN" 2>/dev/null; exit 1; }
+grep -qE '^claude\tsonnet5\tclaude-sonnet-5$' "$RFGEN" || { echo 'FAIL: (t) sonnet5 별칭(구 Sonnet 5) 없음'; cat "$RFGEN" 2>/dev/null; exit 1; }
+
+# (u) 모델 표기 — opus-5-5 와 opus-5 (및 sonnet 동형) 가 1m 창에서도 구분돼야 한다 (5칸 절단으로 둘 다 opus5·1m/sonn5·1m 이 되던 충돌)
+eval "$(sed -n '/^model_short()/,/^}/p' "$TMM")"
+_ms="$(model_short 'claude-opus-5-5[1m]')|$(model_short 'claude-opus-5[1m]')|$(model_short claude-opus-5-5)|$(model_short claude-opus-5)"
+[ "$_ms" = 'op55·1m|opus5·1m|op55|opus5' ] || { echo "FAIL: (u) model_short opus-5-5 구분 실패: $_ms"; exit 1; }
+_ms2="$(model_short 'claude-sonnet-5-5[1m]')|$(model_short 'claude-sonnet-5[1m]')|$(model_short claude-sonnet-5-5)|$(model_short claude-sonnet-5)"
+[ "$_ms2" = 'sn55·1m|sonn5·1m|sn55|sonn5' ] || { echo "FAIL: (u) model_short sonnet-5-5 구분 실패: $_ms2"; exit 1; }
+
+# ---------- (v)(w)(x)(y) 0.7.0 — 탭 뷰 · 뷰별 키워드 · 복귀 경로 ----------
+# (v) 탭 뷰: 상단 카테고리 탭 줄 + Tab/S-Tab 회전 + 선택 탭만 보이는 목록, 목록↔탭(^V)
+for n in TABX_A TABX_B TABY_A; do tm new-session -d -s "$n"; done
+sleep 0.4
+tmm view live >/dev/null; tmm mode time; rm -f "$STATE/tab" "$STATE/tabsel" "$STATE/tabs"
+tmm header | grep -q 'tabx' && { echo 'FAIL: (v) 목록 모드 헤더에 탭 줄이 나옴'; exit 1; }
+[ "$(tmm tabkey next)" = 'toggle+down' ] || { echo 'FAIL: (v) 목록 모드 Tab 이 원래 동작(toggle+down)이 아님'; exit 1; }
+[ "$(tmm tabkey prev)" = 'toggle+up' ]   || { echo 'FAIL: (v) 목록 모드 S-Tab 이 원래 동작(toggle+up)이 아님'; exit 1; }
+tmm vtab | grep -q 'reload' || { echo 'FAIL: (v) ^V 가 reload 액션을 안 냄'; exit 1; }
+[ -f "$STATE/tab" ] || { echo 'FAIL: (v) ^V 후 tab 상태 파일 없음'; exit 1; }
+# 시작 탭(선택 없음) = 첫 카테고리 — 가장 무거운 전체가 아니다
+default_n="$(tmm rows-cur | wc -l | tr -d ' ')"
+printf '*\n' > "$STATE/tabsel"; all_total="$(tmm rows-cur | wc -l | tr -d ' ')"
+[ "$default_n" -lt "$all_total" ] || { echo "FAIL: (v) 시작 탭이 전체임(default=$default_n all=$all_total) — 첫 카테고리여야 함"; exit 1; }
+all_out="$(tmm rows-cur | grep TAB)"
+for n in TABX_A TABX_B TABY_A; do printf '%s\n' "$all_out" | grep -q "$n" || { echo "FAIL: (v) 전체 탭에 $n 없음"; exit 1; }; done
+printf '%s\n' "$all_out" | awk -F'\t' '$2=="TABX_A"{print $1}' | grep -q '^tabx ' || { echo 'FAIL: (v) 전체 탭은 카테고리 열을 유지해야 함'; exit 1; }
+[ "$(tail -1 "$STATE/tabs" | cut -f1)" = '*' ] || { echo 'FAIL: (v) tabs 파일 «마지막» 줄이 전체(*)가 아님'; cat "$STATE/tabs"; exit 1; }
+[ "$(sed -n 1p "$STATE/tabs" | cut -f1)" != '*' ] || { echo 'FAIL: (v) 전체가 첫 탭에 있음'; exit 1; }
+[ "$(awk -F'\t' '$1=="tabx"{print $2}' "$STATE/tabs")" = 2 ] || { echo 'FAIL: (v) TABX 카운트≠2'; cat "$STATE/tabs"; exit 1; }
+[ "$(awk -F'\t' '$1=="taby"{print $2}' "$STATE/tabs")" = 1 ] || { echo 'FAIL: (v) TABY 카운트≠1'; cat "$STATE/tabs"; exit 1; }
+bar="$(tmm header | sed -n '$p' | sed 's/\x1b\[[0-9;]*m//g')"
+printf '%s\n' "$bar" | grep -qE '전체 [0-9]+ *$' || { echo "FAIL: (v) 전체가 탭 줄의 «마지막»이 아님: $bar"; exit 1; }
+printf '%s\n' "$bar" | grep -q '전체' && printf '%s\n' "$bar" | grep -q 'tabx 2' && printf '%s\n' "$bar" | grep -q 'taby 1' || { echo "FAIL: (v) 헤더 마지막 줄이 탭 줄이 아님: $bar"; exit 1; }
+# Tab = 다음 탭. 전체(마지막)에서 누르면 첫 카테고리로 돈다 → 그 카테고리만, 카테고리 열은 뗀다
+nx="$(tmm tabkey next)"
+printf '%s\n' "$nx" | grep -q '^reload(cat ' && [ -n "$(cat "$STATE/wantpos" 2>/dev/null)" ] || { echo "FAIL: (v) Tab 이 reload(cat …)+wantpos 가 아님: $nx"; exit 1; }
+first_cat="$(sed -n 1p "$STATE/tabs" | cut -f1)"
+[ "$(cat "$STATE/tabsel")" = "$first_cat" ] || { echo "FAIL: (v) Tab 후 선택 탭≠첫 카테고리($first_cat): $(cat "$STATE/tabsel")"; exit 1; }
+sel_out="$(tmm rows-cur)"
+[ "$(printf '%s\n' "$sel_out" | awk -F'\t' -v c="$first_cat" '$3!=c' | wc -l | tr -d ' ')" = 0 ] || { echo 'FAIL: (v) 선택 탭에 다른 카테고리 행이 섞임'; printf '%s\n' "$sel_out"; exit 1; }
+printf '%s\n' "$sel_out" | awk -F'\t' '{print $1}' | grep -qE '^[●○] ' || { echo 'FAIL: (v) 선택 탭에서 카테고리 열이 안 떼짐'; printf '%s\n' "$sel_out" | head -3; exit 1; }
+tmm header | sed -n '$p' | sed 's/\x1b\[[0-9;]*m//g' | grep -q "$first_cat" || { echo 'FAIL: (v) 탭 줄에 선택 카테고리 없음'; exit 1; }
+# →/← 는 Tab/S-Tab 과 같다(탭 뷰). 선택 탭이 Tab 과 같은 규칙으로 움직인다
+printf '%s\n' "$first_cat" > "$STATE/tabsel"
+ar="$(tmm arrowkey next)"; printf '%s\n' "$ar" | grep -q '^reload(cat ' || { echo "FAIL: (v) → 가 Tab 과 같은 reload(cat …) 가 아님: $ar"; exit 1; }
+nxt_sel="$(cat "$STATE/tabsel")"; printf '%s\n' "$first_cat" > "$STATE/tabsel"; tmm tabkey next >/dev/null
+[ "$nxt_sel" = "$(cat "$STATE/tabsel")" ] || { echo "FAIL: (v) → 와 Tab 의 결과 탭이 다름($nxt_sel vs $(cat "$STATE/tabsel"))"; exit 1; }
+printf '%s\n' "$nxt_sel" > "$STATE/tabsel"; tmm arrowkey prev >/dev/null; tmm_back="$(cat "$STATE/tabsel")"
+printf '%s\n' "$nxt_sel" > "$STATE/tabsel"; tmm tabkey prev >/dev/null
+[ "$tmm_back" = "$(cat "$STATE/tabsel")" ] || { echo 'FAIL: (v) ← 와 S-Tab 의 결과 탭이 다름'; exit 1; }
+printf '%s\n' "$first_cat" > "$STATE/tabsel"
+# 한 바퀴 돌면 전체로 돌아온다 (탭 수 = tabs 줄 수)
+ntab="$(wc -l < "$STATE/tabs" | tr -d ' ')"
+for _ in $(seq 2 "$ntab"); do tmm tabkey next >/dev/null; done
+[ "$(cat "$STATE/tabsel")" = '*' ] || { echo "FAIL: (v) $ntab 번 Tab 후 전체(*)로 안 돌아옴: $(cat "$STATE/tabsel")"; exit 1; }
+# S-Tab = 이전: 전체(마지막)에서 뒤로 가면 전체 바로 앞 탭(마지막 카테고리)
+tmm tabkey prev >/dev/null
+[ "$(cat "$STATE/tabsel")" = "$(sed -n "$((ntab-1))p" "$STATE/tabs" | cut -f1)" ] || { echo "FAIL: (v) 전체에서 S-Tab 이 마지막 카테고리가 아님: $(cat "$STATE/tabsel")"; exit 1; }
+# 고른 카테고리가 사라졌으면 전체로 (죽은 탭에 갇히지 않게)
+printf 'NOPE\n' > "$STATE/tabsel"
+# 사라진 탭에 갇히지 않되 «전체»(가장 무거움)로 튀지도 않는다 → 시작 탭과 같은 첫 카테고리
+nope_names="$(tmm rows-cur | cut -f2 | sort)"; printf '%s\n' "$first_cat" > "$STATE/tabsel"; first_names="$(tmm rows-cur | cut -f2 | sort)"
+[ "$nope_names" = "$first_names" ] || { echo 'FAIL: (v) 없는 탭이 첫 카테고리로 안 돌아감'; exit 1; }
+# 탭 줄은 폰 60열(표시폭 ≤58)에서 잘리지 않는다 — 모든 탭이 선택된 상태에서 잰다
+for i in $(seq 1 "$ntab"); do
+  FZF_COLUMNS=60 tmm header | sed -n '$p' | python3 -c '
+import sys, re, unicodedata
+l = re.sub(r"\x1b\[[0-9;]*m", "", sys.stdin.readline().rstrip("\n"))
+w = sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in l)
+if w > 58: print(f"FAIL: 탭 줄 {w}열 > 58: {l}"); sys.exit(1)' || exit 1
+  tmm tabkey next >/dev/null
+done
+printf '*\n' > "$STATE/tabsel"
+tmm blabel | grep -q '탭' || { echo 'FAIL: (v) 탭 모드 상단 라벨에 「탭」 없음'; exit 1; }
+tmm onload | grep -q 'transform-header' || { echo 'FAIL: (v) 탭 모드 load 이벤트가 헤더를 안 갱신'; exit 1; }
+tmm vtab >/dev/null; [ -f "$STATE/tab" ] && { echo 'FAIL: (v) ^V 재입력이 목록으로 안 돌아옴'; exit 1; }
+[ "$(tmm arrowkey next)" = forward-char ] && [ "$(tmm arrowkey prev)" = backward-char ] || { echo 'FAIL: (v) 목록 뷰 방향키가 입력창 커서 이동(forward/backward-char)이 아님'; exit 1; }
+tmm header | grep -q 'tabx' && { echo 'FAIL: (v) 목록 복귀 후에도 탭 줄이 나옴'; exit 1; }
+tmm onload | grep -q 'transform-header' && { echo 'FAIL: (v) 목록 모드 load 이벤트가 헤더를 건드림(종료 뷰에서는 무거운 스캔)'; exit 1; }
+# 종료 뷰에는 탭이 없다 — Tab 은 원래 동작
+tmm view dead >/dev/null; tmm vtab | grep -q '탭은 좌석뷰 전용' || { echo 'FAIL: (v) 종료 뷰 ^V 안내 없음'; exit 1; }
+[ -f "$STATE/tab" ] && { echo 'FAIL: (v) 종료 뷰 ^V 가 상태를 바꿈'; exit 1; }
+: > "$STATE/tab"; [ "$(tmm arrowkey next)" = forward-char ] || { echo 'FAIL: (v) 종료 뷰 → 가 커서 이동이 아님'; exit 1; }
+[ "$(tmm tabkey next)" = 'toggle+down' ] || { echo 'FAIL: (v) 종료 뷰 Tab 이 원래 동작이 아님'; exit 1; }
+tmm view live >/dev/null
+rm -f "$STATE/tab" "$STATE/tabsel" "$STATE/tabs"
+
+# (w) 뷰별 키워드: ^A/^D 는 나가는 뷰의 질의를 저장하고 들어가는 뷰의 질의를 복원한다
+rm -f "$STATE"/query.*; tmm view live >/dev/null
+w1="$(tmm vswitch dead 'live-kw')"
+[ "$(cat "$STATE/view")" = dead ] || { echo 'FAIL: (w) vswitch dead 후 view≠dead'; exit 1; }
+[ "$(cat "$STATE/query.live")" = 'live-kw' ] || { echo 'FAIL: (w) 나가는 뷰 질의가 저장 안 됨'; exit 1; }
+printf '%s\n' "$w1" | grep -q 'change-query()$' || { echo "FAIL: (w) 처음 들어가는 종료 뷰는 질의가 비어야 함: $w1"; exit 1; }
+printf '%s\n' "$w1" | grep -q 'change-prompt(종료> )' || { echo 'FAIL: (w) 종료 프롬프트 아님'; exit 1; }
+w2="$(tmm vswitch live 'dead)+kw')"
+[ "$(cat "$STATE/query.dead")" = 'dead)+kw' ] || { echo 'FAIL: (w) 특수문자 질의 저장 실패'; exit 1; }
+printf '%s\n' "$w2" | grep -qF '+change-query:live-kw' || { echo "FAIL: (w) 좌석뷰 복귀 시 live 키워드 복원 아님: $w2"; exit 1; }
+w3="$(tmm vswitch dead 'live-kw')"
+printf '%s\n' "$w3" | grep -qF '+change-query:dead)+kw' || { echo "FAIL: (w) 종료뷰 재진입 시 dead 키워드 복원 아님(콜론 형식 마지막): $w3"; exit 1; }
+tmm vswitch live '' >/dev/null; rm -f "$STATE"/query.*
+
+# (x) 피커 세션은 tmux 프리픽스를 끈다(^A 가 프리픽스로 먹혀 ^D 가 detach 가 되던 것) — tui_wrap 코드 고정
+grep -q "set -t \"=\$sess:\" prefix None" "$TMM" || { echo 'FAIL: (x) tui_wrap 이 피커 세션 prefix None 을 안 검'; exit 1; }
+grep -q -- '--expect=enter,ctrl-e,ctrl-s,ctrl-k,ctrl-f,double-click' "$TMM" || { echo 'FAIL: (x) enter 가 --expect 에서 빠짐(attach 키 회귀)'; exit 1; }
+
+# (y) 좌석 → 피커 복귀(dkey): 출발 피커 기록 → 직전이 좌석이어도 복귀 → 피커 없으면 detach.  pty 클라이언트를 python 으로 붙인다.
+pty_attach() {  # <세션> — 백그라운드 pty 클라이언트(최대 40초)
+  python3 - "$SOCK_DIR" "$1" <<'PYC' &
+import os, pty, sys, time, fcntl, termios, struct
+sock, sess = sys.argv[1:3]
+env = dict(os.environ, TMUX_TMPDIR=sock, TERM="xterm-256color"); env.pop("TMUX", None)
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvpe("tmux", ["tmux", "attach", "-t", "=" + sess], env)
+fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
+end = time.time() + 40
+while time.time() < end:
+    try:
+        if not os.read(fd, 4096): break
+    except OSError: break
+PYC
+}
+first_client() { tm list-clients -F '#{client_tty}' 2>/dev/null | head -1; }
+wait_client() { for _ in $(seq 1 30); do [ -n "$(first_client)" ] && return 0; sleep 0.2; done; echo "FAIL: (y) pty 클라이언트가 안 붙음"; exit 1; }
+cur_sess() { tm list-clients -F '#{client_session}' 2>/dev/null | head -1; }
+for n in PICKA PICKB; do tm new-session -d -s "$n"; tm set -t "=$n:" @tmm_picker 1; done
+for n in SEATX SEATY; do tm new-session -d -s "$n"; done
+pty_attach SEATX; wait_client
+YTTY="$(first_client)"; YKEY="$(printf '%s' "$YTTY" | tr -c 'A-Za-z0-9' '_')"
+# ① 출발 피커 기록이 있으면 «직전 세션이 뭐든» 거기로
+tm set -g "@tmm_home_$YKEY" PICKA
+tm switch-client -c "$YTTY" -t =SEATY; tm switch-client -c "$YTTY" -t =SEATX   # 직전(last)=SEATY(좌석)
+tmm dkey "$YTTY" SEATX; sleep 0.3
+[ "$(cur_sess)" = PICKA ] || { echo "FAIL: (y) 출발 피커(PICKA)로 복귀 안 함 → $(cur_sess)"; exit 1; }
+# ② 출발 기록이 없고 직전도 좌석이면 «붙은 클라이언트 없는 피커»로 (예전엔 detach=tmm 종료)
+tm set -gu "@tmm_home_$YKEY"
+tm switch-client -c "$YTTY" -t =SEATY; tm switch-client -c "$YTTY" -t =SEATX
+tmm dkey "$YTTY" SEATX; sleep 0.3
+case "$(cur_sess)" in PICK*) ;; *) echo "FAIL: (y) 직전이 좌석일 때 피커로 복귀 안 함 → $(cur_sess)"; exit 1;; esac
+# ③ 피커 세션에서 누르면 원래대로 detach(피커 자체를 떼는 동작은 유지)
+YCUR="$(cur_sess)"; tmm dkey "$YTTY" "$YCUR"; sleep 0.5
+[ -z "$(first_client)" ] || { echo 'FAIL: (y) 피커에서의 dkey 가 detach 가 아님'; exit 1; }
+# ④ 피커가 하나도 없으면 detach
+pty_attach SEATX; wait_client; YTTY="$(first_client)"
+tm set -t =PICKA: @tmm_picker 0; tm set -t =PICKB: @tmm_picker 0
+tmm dkey "$YTTY" SEATX; sleep 0.5
+[ -z "$(first_client)" ] || { echo 'FAIL: (y) 피커가 없을 때 detach 가 아님'; exit 1; }
+# ⑤ cmd_attach 가 피커 안에서 출발 피커를 기록한다
+tm set -t =PICKA: @tmm_picker 1
+pty_attach PICKA; wait_client; YTTY="$(first_client)"; YKEY="$(printf '%s' "$YTTY" | tr -c 'A-Za-z0-9' '_')"
+tm send-keys -t '=PICKA:' -l "'$TMM' a SEATY"; tm send-keys -t '=PICKA:' Enter
+for _ in $(seq 1 30); do [ "$(cur_sess)" = SEATY ] && break; sleep 0.2; done
+[ "$(cur_sess)" = SEATY ] || { echo "FAIL: (y) 피커 안의 tmm a 가 좌석으로 전환 못함 → $(cur_sess)"; exit 1; }
+[ "$(tm show -gqv "@tmm_home_$YKEY")" = PICKA ] || { echo "FAIL: (y) cmd_attach 가 출발 피커를 기록 안 함: '$(tm show -gqv "@tmm_home_$YKEY")'"; exit 1; }
+tm detach-client -t "$YTTY" 2>/dev/null || true
+
+# (pk) 피커 재사용 — 붙은 클라이언트가 0 이어도 «좌석에 가 있는 클라이언트의 출발 피커(@tmm_home)·직전 세션»이면 이어받지 않는다(0.8.0).
+#   폰이 좌석에 붙어 있는 동안 피커 클라이언트가 0 이 되고, 그때 데스크탑 tmm 이 같은 피커에 붙어 한 fzf 를 둘이 보던 원인. SSH 가 끊겨 클라이언트가 사라진 피커는 그대로 이어받는다.
+pk() { env -u TMUX -u TMM_RUN TMUX_TMPDIR="$SOCK_DIR" TMPDIR="$SOCK_DIR" TMM_SESSION=PKTMM bash -c 'source "'"$TMM"'" __lib; pick_picker_name'; }
+# @tmm_ver 를 지금 버전으로 못 박는다 — (pk) 는 «클라이언트 참조» 계약이라 버전 축(0.8.5 (pv))과 섞이면 안 된다
+tm new-session -d -s PKTMM; tm set -t =PKTMM: @tmm_picker 1; tm set -t =PKTMM: @tmm_ver "$(cat "$ROOT/core/VERSION")"; tm new-session -d -s PKSEAT
+[ "$(pk)" = PKTMM ] || { echo "FAIL: (pk) 클라이언트 0·참조 0 인 피커를 이어받지 않음: $(pk)"; exit 1; }
+pty_attach PKSEAT; wait_client; PTTY="$(first_client)"; PKEY="$(printf '%s' "$PTTY" | tr -c 'A-Za-z0-9' '_')"
+tm set -g "@tmm_home_$PKEY" PKTMM
+[ "$(pk)" = PKTMM-2 ] || { echo "FAIL: (pk) 출발 피커로 적힌 클라이언트가 좌석에 살아 있는데 재사용: $(pk)"; exit 1; }
+tm set -gu "@tmm_home_$PKEY"
+tm switch-client -c "$PTTY" -t =PKTMM; tm switch-client -c "$PTTY" -t =PKSEAT     # 직전(last)=PKTMM
+[ "$(pk)" = PKTMM-2 ] || { echo "FAIL: (pk) 직전 세션이 피커인 클라이언트가 살아 있는데 재사용: $(pk)"; exit 1; }
+tm new-session -d -s PKTMM-2; tm set -t =PKTMM-2: @tmm_picker 1; tm set -t =PKTMM-2: @tmm_ver "$(cat "$ROOT/core/VERSION")"; tm set -g "@tmm_home_$PKEY" PKTMM-2
+[ "$(pk)" = PKTMM-3 ] || { echo "FAIL: (pk) -2 도 참조 중이면 -3 이어야 함: $(pk)"; exit 1; }
+tm detach-client -t "$PTTY" 2>/dev/null || true; sleep 0.4
+[ "$(pk)" = PKTMM ] || { echo "FAIL: (pk) 클라이언트가 떨어진 피커(SSH 끊김)는 이어받아야 함(낡은 @tmm_home 은 무시): $(pk)"; exit 1; }
+tm set -gu "@tmm_home_$PKEY"; tm kill-session -t =PKTMM-2
+
+# (pv) 업그레이드 뒤 살아남은 «다른 버전» 피커는 이어받지 않는다(0.8.5) — 2026-10-18 실사고: 0.8.4 설치 전에 뜬 0.8.3 피커를
+#   폰이 계속 물어 화면은 남고 키·탭 전환이 전부 사라졌다(그 피커의 RUN 디렉터리 소켓이 죽어 POST 가 실패).
+#   규칙: 버전이 다르면(=@tmm_ver 없음 포함) ①클라이언트가 없으면 죽이고 그 이름을 다시 쓴다 ②붙은 클라이언트가 있으면 건드리지 않고 다음 이름.
+pv() { env -u TMUX -u TMM_RUN TMUX_TMPDIR="$SOCK_DIR" TMPDIR="$SOCK_DIR" TMM_SESSION="$1" bash -c 'source "'"$TMM"'" __lib; pick_picker_name'; }
+CURV="$(cat "$ROOT/core/VERSION")"
+tm new-session -d -s PKV; tm set -t =PKV: @tmm_picker 1; tm set -t =PKV: @tmm_ver 0.0.1
+[ "$(pv PKV)" = PKV ] || { echo "FAIL: (pv) 다른 버전 피커를 이어받으면 안 됨: $(pv PKV)"; exit 1; }
+tm has-session -t =PKV 2>/dev/null && { echo 'FAIL: (pv) 클라이언트 없는 좀비 피커를 죽이지 않음(이름만 재사용하고 옛 세션이 살아 있음)'; exit 1; }
+tm new-session -d -s PKV2; tm set -t =PKV2: @tmm_picker 1; tm set -t =PKV2: @tmm_ver "$CURV"
+[ "$(pv PKV2)" = PKV2 ] || { echo "FAIL: (pv) 같은 버전 피커는 이어받아야 함: $(pv PKV2)"; exit 1; }
+tm has-session -t =PKV2 2>/dev/null || { echo 'FAIL: (pv) 같은 버전 피커를 죽임'; exit 1; }
+tm set -t =PKV2: @tmm_ver 0.0.1               # 좀비인데 클라이언트가 붙어 있으면 = 남의 화면 → 죽이지 않고 새 이름
+pty_attach PKV2; wait_client
+[ "$(pv PKV2)" = PKV2-2 ] || { echo "FAIL: (pv) 클라이언트가 붙은 다른 버전 피커는 건드리지 않고 새 이름이어야 함: $(pv PKV2)"; exit 1; }
+tm has-session -t =PKV2 2>/dev/null || { echo 'FAIL: (pv) 붙은 클라이언트가 있는 피커를 죽임(남의 화면이 사라짐)'; exit 1; }
+tm detach-client -t "$(first_client)" 2>/dev/null || true; sleep 0.4
+# @tmm_ver 이 아예 없는 0.8.4 이하 피커도 좀비로 본다 — 업그레이드 직후 남는 실제 모양
+tm new-session -d -s PKV3; tm set -t =PKV3: @tmm_picker 1
+tm has-session -t =PKV3 2>/dev/null && [ "$(pv PKV3)" = PKV3 ] || { echo "FAIL: (pv) @tmm_ver 없는 옛 피커를 좀비로 안 봄: $(pv PKV3)"; exit 1; }
+tm kill-session -t =PKV2 2>/dev/null || true
+# 피커가 스스로 기록하는지 — tui_wrap 이 세션 옵션에 현재 버전을 남긴다(grep 은 문자열 회귀만 잡는다)
+grep -q '@tmm_ver "\$TMM_VERSION"' "$TMM" || { echo 'FAIL: (pv) tui_wrap 이 @tmm_ver 를 안 남김'; exit 1; }
+
+# (sp) 분할 화면(0.8.0) — 왼쪽 = 카테고리 칸(별도 fzf, tmux pane), 오른쪽 = 세션 목록. 키는 ↑↓ + Enter(분류→목록) + Esc·⌫(목록→분류). ←/→ 는 별칭. Tab/S-Tab 탭 회전 폐지.
+lib() { env -u TMUX -u TMM_RUN TMUX_TMPDIR="$SOCK_DIR" TMPDIR="$SOCK_DIR" bash -c 'source "'"$TMM"'" __lib; RUN="'"$STATE"'"; '"$1"; }
+[ "$(lib 'split_catw 60')" = 11 ] && [ "$(lib 'split_catw 119')" = 11 ] && [ "$(lib 'split_catw 120')" = 16 ] || { echo "FAIL: (sp) 카테고리 칸 폭 규칙(<120→11, ≥120→16): $(lib 'split_catw 60') $(lib 'split_catw 120')"; exit 1; }
+# 카테고리 행: «키\t라벨». 좁은 칸(11)은 이름 5자 + 수(회색 2자) + ⚠N, 넓은 칸(16)은 이름 8자 + 수 + ⚠N. 전체(*)는 「전체」.
+printf 'harness\t12\t2\ngraphics\t11\t0\n*\t23\t2\n' > "$STATE/tabs"
+printf '11' > "$STATE/catw"; cr="$(tmm catrows)"
+[ "$(printf '%s\n' "$cr" | wc -l | tr -d ' ')" = 3 ] || { echo "FAIL: (sp) catrows 행 수≠3"; printf '%s\n' "$cr"; exit 1; }
+printf '%s\n' "$cr" | sed -n 1p | grep -q $'^harness\t' || { echo "FAIL: (sp) catrows 1열이 키가 아님"; printf '%s\n' "$cr"; exit 1; }
+printf '%s\n' "$cr" | sed -n 1p | sed 's/\x1b\[[0-9;]*m//g' | grep -q $'\tharne12⚠2$' || { echo "FAIL: (sp) 좁은 칸 라벨이 «이름5자 수 ⚠N» 이 아님: $(printf '%s\n' "$cr" | sed -n 1p)"; exit 1; }
+printf '%s\n' "$cr" | sed -n 2p | sed 's/\x1b\[[0-9;]*m//g' | grep -q $'\tgraph11$' || { echo "FAIL: (sp) 좁은 칸은 8자 이름을 5자로 자르고 수(11)를 붙여야 함"; exit 1; }
+printf '%s\n' "$cr" | sed -n 3p | sed 's/\x1b\[[0-9;]*m//g' | grep -q $'^\*\t전체 23⚠2$' || { echo "FAIL: (sp) 전체(*) 라벨: $(printf '%s\n' "$cr" | sed -n 3p)"; exit 1; }
+printf '16' > "$STATE/catw"; tmm catrows | sed -n 1p | sed 's/\x1b\[[0-9;]*m//g' | grep -q $'\tharness  12⚠2$' || { echo "FAIL: (sp) 넓은 칸 라벨이 «이름8자 수⚠N» 이 아님: $(tmm catrows | sed -n 1p)"; exit 1; }
+# (sp) cat_sync — 분류 행이 «바뀐 때만» catrows 를 갱신(바뀜=0, 안 바뀜=1). 핑거가 reload 를 쏠지 여기서 가른다(내용 같으면 reload 0 → 분류 fzf 가 키 입력을 안 버린다)
+printf '11' > "$STATE/catw"; printf 'harness\t12\t2\ngraphics\t11\t0\n*\t23\t2\n' > "$STATE/tabs"; rm -f "$STATE/catrows" "$STATE/catrows.new"
+[ "$(lib 'cat_sync; echo $?')" = 0 ] || { echo 'FAIL: (sp) cat_sync 첫 호출(파일 없음)이 0(바뀜)이 아님'; exit 1; }
+[ -s "$STATE/catrows" ] || { echo 'FAIL: (sp) cat_sync 가 catrows 를 안 만듦'; exit 1; }
+[ "$(lib 'cat_sync; echo $?')" = 1 ] || { echo 'FAIL: (sp) cat_sync 재호출(내용 동일)이 1(안 바뀜)이 아님'; exit 1; }
+printf 'harness\t12\t3\ngraphics\t11\t0\n*\t23\t3\n' > "$STATE/tabs"   # 대기수(⚠ — 좁은 칸 라벨에 보이는 값)가 바뀌면
+[ "$(lib 'cat_sync; echo $?')" = 0 ] || { echo 'FAIL: (sp) cat_sync 가 내용 변경을 0 으로 안 알림'; exit 1; }
+[ ! -f "$STATE/catrows.new" ] || { echo 'FAIL: (sp) cat_sync 가 임시 .new 를 안 치움'; exit 1; }
+printf 'harness\t12\t2\ngraphics\t11\t0\n*\t23\t2\n' > "$STATE/tabs"   # 원복
+# 분할이 켜져 있으면(catpane 파일) 전체 폭(term_cols) = 목록 폭 + 칸 폭 + 1. 미리보기 방향은 «목록 칸» 폭(전체 − 칸 − 1)이 120 이상일 때만 오른쪽.
+printf '11' > "$STATE/catw"; rm -f "$STATE/catpane" "$STATE/pw"
+[ "$(FZF_COLUMNS=119 tmm pw | cut -d, -f1)" = down ] && [ "$(FZF_COLUMNS=120 tmm pw | cut -d, -f1)" = right ] || { echo 'FAIL: (sp) 분할 아닐 때 119→down · 120→right 여야 함'; exit 1; }
+printf '%%9' > "$STATE/catpane"; rm -f "$STATE/pw"
+[ "$(FZF_COLUMNS=108 tmm header >/dev/null; FZF_COLUMNS=108 bash -c 'source "'"$TMM"'" __lib; RUN="'"$STATE"'"; term_cols')" = 120 ] || { echo "FAIL: (sp) 분할(칸 11)이면 term_cols = 108+12 = 120 이어야 함"; exit 1; }
+rm -f "$STATE/pw"; [ "$(FZF_COLUMNS=108 tmm pw | cut -d, -f1)" = down ] || { echo "FAIL: (sp) 분할에서 목록 칸 108 은 down 이어야 함(전체 120 이어도): $(FZF_COLUMNS=108 tmm pw)"; exit 1; }
+rm -f "$STATE/pw"; [ "$(FZF_COLUMNS=120 tmm pw | cut -d, -f1)" = right ] || { echo "FAIL: (sp) 분할에서 목록 칸 120 은 right 여야 함: $(FZF_COLUMNS=120 tmm pw)"; exit 1; }
+rm -f "$STATE/pw"
+# 분할 헤더: 탭 줄 없음 · 안내는 ↑↓ ⏎ Esc 만(Tab/S-Tab 없음) · 60열 폰(목록 48열)에서 각 줄 ≤46
+: > "$STATE/tab"; tmm view live >/dev/null; printf 'harness\n' > "$STATE/tabsel"
+hs="$(FZF_COLUMNS=48 tmm header | sed 's/\x1b\[[0-9;]*m//g')"
+printf '%s\n' "$hs" | grep -q 'Tab' && { echo "FAIL: (sp) 분할 헤더에 Tab/S-Tab 이 남아 있음"; printf '%s\n' "$hs"; exit 1; }
+printf '%s\n' "$hs" | grep -q '전체 23' && { echo "FAIL: (sp) 분할인데 탭 줄이 나옴"; printf '%s\n' "$hs"; exit 1; }
+printf '%s\n' "$hs" | sed -n '$p' | grep -q '↑↓' && printf '%s\n' "$hs" | sed -n '$p' | grep -q 'Esc' || { echo "FAIL: (sp) 분할 안내줄(↑↓·⏎·Esc)이 마지막 줄에 없음"; printf '%s\n' "$hs"; exit 1; }
+printf '%s\n' "$hs" | python3 -c '
+import sys, re, unicodedata
+for l in sys.stdin.read().splitlines():
+    w = sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in l)
+    if w > 46: print(f"FAIL: (sp) 48열 목록 헤더 줄 {w}열 > 46: {l}"); sys.exit(1)' || exit 1
+hw="$(FZF_COLUMNS=60 tmm header | sed 's/\x1b\[[0-9;]*m//g')"
+printf '%s\n' "$hw" | grep -q '^이동 ' || { echo "FAIL: (sp) 60열 목록이면 섹션 라벨이 있는 보통 헤더여야 함"; printf '%s\n' "$hw"; exit 1; }
+FZF_COLUMNS=58 tmm header | sed 's/\x1b\[[0-9;]*m//g' | grep -q '^이동 ' && { echo "FAIL: (sp) 58열 목록(70열 폰+분할)은 들여쓰기 2 때문에 보통 헤더가 잘린다 → 좁은 헤더여야 함"; exit 1; }
+# 키: 분할이면 Tab/S-Tab=ignore · ←/Esc/빈 질의 ⌫ = 분류 칸으로 · → = ignore · 질의 있는 ⌫ = 글자 지움. 분할 아니면 Esc=abort, ⌫=글자 지움
+[ "$(tmm tabkey next X)" = ignore ] && [ "$(tmm tabkey prev X)" = ignore ] || { echo "FAIL: (sp) 분할에서 Tab/S-Tab 이 ignore 가 아님: $(tmm tabkey next X)"; exit 1; }
+[ "$(tmm arrowkey prev X)" = 'execute-silent(tmux select-pane -t %9)' ] || { echo "FAIL: (sp) ← 가 분류 칸 이동이 아님: $(tmm arrowkey prev X)"; exit 1; }
+[ "$(tmm arrowkey next X)" = ignore ] || { echo "FAIL: (sp) → 가 ignore 가 아님: $(tmm arrowkey next X)"; exit 1; }
+[ "$(tmm esckey)" = 'execute-silent(tmux select-pane -t %9)' ] || { echo "FAIL: (sp) Esc 가 분류 칸 이동이 아님: $(tmm esckey)"; exit 1; }
+[ "$(tmm bskey '')" = 'execute-silent(tmux select-pane -t %9)' ] || { echo "FAIL: (sp) 빈 질의 ⌫ 가 분류 칸 이동이 아님: $(tmm bskey '')"; exit 1; }
+[ "$(tmm bskey 'ab')" = 'backward-delete-char' ] || { echo "FAIL: (sp) 질의 있는 ⌫ 가 글자 지움이 아님: $(tmm bskey ab)"; exit 1; }
+rm -f "$STATE/catpane"
+[ "$(tmm esckey)" = abort ] && [ "$(tmm bskey '')" = 'backward-delete-char' ] || { echo "FAIL: (sp) 분할 아닐 때 Esc=abort · ⌫=글자 지움이어야 함"; exit 1; }
+# tabgo: 분류 칸이 고른 카테고리로 목록을 직접 바꾼다(회전 없음) — 떠나는 탭 커서 저장 · wantpos · 같은 탭이면 ignore
+for n in SPX_A SPX_B SPY_A; do tm has-session -t "=$n" 2>/dev/null || tm new-session -d -s "$n"; done
+sleep 0.3; tmm mode time; rm -f "$STATE/tabcur" "$STATE/tabrows"; printf 'spx\n' > "$STATE/tabsel"; tmm rows-cur >/dev/null
+[ "$(tmm tabgo spx SPX_B)" = ignore ] || { echo "FAIL: (sp) 같은 탭 tabgo 가 ignore 가 아님: $(tmm tabgo spx SPX_B)"; exit 1; }
+go="$(tmm tabgo spy SPX_B)"; printf '%s\n' "$go" | grep -q '^reload(cat ' || { echo "FAIL: (sp) tabgo 가 reload(cat …) 가 아님: $go"; exit 1; }
+[ "$(cat "$STATE/tabsel")" = spy ] || { echo "FAIL: (sp) tabgo 뒤 tabsel≠spy: $(cat "$STATE/tabsel")"; exit 1; }
+[ "$(awk -F'\t' '$1=="spx"{print $2}' "$STATE/tabcur")" = SPX_B ] || { echo 'FAIL: (sp) tabgo 가 떠나는 탭 커서를 저장 안 함'; exit 1; }
+[ -n "$(cat "$STATE/wantpos" 2>/dev/null)" ] || { echo 'FAIL: (sp) tabgo 가 wantpos 를 안 적음'; exit 1; }
+tmm rows-cur | cut -f2 | grep -q SPY_A && ! tmm rows-cur | cut -f2 | grep -q SPX_A || { echo 'FAIL: (sp) tabgo 뒤 목록이 spy 만이 아님'; exit 1; }
+rm -f "$STATE/wantpos" "$STATE/tabcur" "$STATE/tabrows"
+# 격리 tmux 에서 실제 pane 열기/닫기 — 왼쪽에 칸 폭짜리 pane 이 생기고 그 안에 fzf(분류 칸)가 돈다. ^V(vtab) 는 칸 숨김/보임.
+#   시작 커서 = tabsel 의 카테고리. tabsel 을 비워 두면 «첫 카테고리»인데 SPX/SPY 는 활동 시각 동률이라 첫 순서가 회차마다 바뀐다(master 재현 4회 중 1회 「▶ spy」)
+#   → tabsel 을 spx 로 못 박고, 분류 칸이 그 행에 커서를 그릴 때까지(최대 8초) 기다린다.
+printf 'spx\n' > "$STATE/tabsel"; tmm rows-cur >/dev/null
+tm new-session -d -s SPLITW -x 70 -y 24 'sleep 60'; sleep 0.2
+MP="$(tm display -p -t '=SPLITW:' '#{pane_id}')"
+tmm split-open "$MP"
+[ "$(tm list-panes -t '=SPLITW:' | wc -l | tr -d ' ')" = 2 ] || { echo 'FAIL: (sp) split-open 뒤 pane 이 2개가 아님'; exit 1; }
+CP="$(cat "$STATE/catpane")"; [ -n "$CP" ] && [ "$CP" != "$MP" ] || { echo "FAIL: (sp) catpane 파일이 새 pane id 가 아님: '$CP'"; exit 1; }
+[ "$(tm display -p -t "$CP" '#{pane_width}')" = 11 ] || { echo "FAIL: (sp) 70열에서 분류 칸 폭≠11: $(tm display -p -t "$CP" '#{pane_width}')"; exit 1; }
+[ "$(tm display -p -t "$CP" '#{pane_left}')" = 0 ] || { echo 'FAIL: (sp) 분류 칸이 왼쪽이 아님'; exit 1; }
+[ "$(cat "$STATE/mainpane")" = "$MP" ] && [ "$(cat "$STATE/catw")" = 11 ] || { echo 'FAIL: (sp) mainpane/catw 상태 파일'; exit 1; }
+# fzf 는 catpane bash 와 같은 프로세스 그룹이라 pane_current_command 는 bash 다 — 화면(분류 제목·▶ 포인터·전체 행)으로 판정
+for _ in $(seq 1 40); do tm capture-pane -p -t "$CP" | grep -q '▶ spx' && break; sleep 0.2; done
+cpv="$(tm capture-pane -p -t "$CP")"
+printf '%s\n' "$cpv" | grep -q '분류' && printf '%s\n' "$cpv" | grep -q '▶ spx' && printf '%s\n' "$cpv" | grep -q '전체' || { echo "FAIL: (sp) 분류 칸 fzf 화면(분류·▶ spx·전체)이 안 보임"; printf '%s\n' "$cpv"; exit 1; }
+for _ in $(seq 1 20); do [ -S "$STATE/cat.sock" ] && break; sleep 0.2; done
+[ -S "$STATE/cat.sock" ] || { echo 'FAIL: (sp) 분류 칸 fzf 소켓(cat.sock) 없음'; exit 1; }
+tmm vtab | grep -q 'transform-header' || { echo 'FAIL: (sp) 분할 중 ^V 가 헤더 갱신 액션을 안 냄'; exit 1; }
+sleep 0.3; [ "$(tm list-panes -t '=SPLITW:' | wc -l | tr -d ' ')" = 1 ] && [ ! -f "$STATE/catpane" ] || { echo 'FAIL: (sp) ^V 가 분류 칸을 안 닫음'; exit 1; }
+tmm vtab >/dev/null; sleep 0.3; [ "$(tm list-panes -t '=SPLITW:' | wc -l | tr -d ' ')" = 2 ] && [ -s "$STATE/catpane" ] || { echo 'FAIL: (sp) ^V 재입력이 분류 칸을 다시 안 엶'; exit 1; }
+tmm split-close; sleep 0.3
+[ "$(tm list-panes -t '=SPLITW:' | wc -l | tr -d ' ')" = 1 ] && [ ! -f "$STATE/catpane" ] || { echo 'FAIL: (sp) split-close 뒤 pane 이 1개가 아니거나 catpane 파일이 남음'; exit 1; }
+tm kill-session -t =SPLITW; rm -f "$STATE/mainpane" "$STATE/catw" "$STATE/tab" "$STATE/tabs" "$STATE/tabsel"
+
+# (zz) 부팅 속도 — 좌석별 캐시 · 직전 화면 즉시 부팅 · 종료 스캔의 lsof 범위 축소
+tmm view live >/dev/null; tmm mode time; rm -f "$STATE/tab" "$EPC" "$STATE/rows.snap" "$STATE/bootstale"
+r1="$(tmm rows-cur | cut -f2 | sort)"
+[ -s "$EPC" ] || { echo 'FAIL: (zz) ep.cache 가 안 만들어짐'; exit 1; }
+awk -F'\t' '$1=="TMM_VERIFY_A" && NF>=5' "$EPC" | grep -q . || { echo 'FAIL: (zz) ep.cache 에 좌석 행(세션·활동·pid·시각·표식)이 없음'; cat "$EPC"; exit 1; }
+r2="$(tmm rows-cur | cut -f2 | sort)"
+[ "$r1" = "$r2" ] || { echo 'FAIL: (zz) 캐시 적중 후 목록이 달라짐'; exit 1; }
+# 캐시 적중이면 좌석별 캡처를 안 한다 — 캐시 행을 위조하면 그 값이 그대로 나와야 한다(재계산했다면 진짜 값)
+cp "$EPC" "$EPC.bak"
+awk -F'\t' 'BEGIN{OFS="\t"} $1=="TMM_VERIFY_A"{$4=1700000000; $5=":"} {print}' "$EPC.bak" > "$EPC"
+tmm rows time | awk -F'\t' '$2=="TMM_VERIFY_A"{print $1}' | grep -q '[0-9][0-9]:[0-9][0-9]' && tmm rows time | awk -F'\t' '$2=="TMM_VERIFY_A"{print $1}' | grep -qE '[0-9]+d *[^ ]*$' \
+  || { echo 'FAIL: (zz) 캐시 값이 쓰이지 않음(매번 재계산)'; tmm rows time | grep VERIFY_A; exit 1; }
+# 활동이 바뀌면(캐시 키 불일치) 다시 계산한다
+tm send-keys -t '=TMM_VERIFY_A:' -l 'echo bump'; tm send-keys -t '=TMM_VERIFY_A:' Enter; sleep 1.2
+tmm rows time | awk -F'\t' '$2=="TMM_VERIFY_A"{print $1}' | grep -qE '[0-9]+d *[^ ]*$' && { echo 'FAIL: (zz) 활동이 바뀌었는데 낡은 캐시를 씀'; exit 1; }
+# 부팅: 스냅샷 없으면 그냥 rows-cur, 있으면 스냅샷 즉시 + boot-reload
+rm -f "$STATE/rows.snap" "$STATE/bootstale"
+tmm rows-boot | cut -f2 | grep -q 'TMM_VERIFY_A' || { echo 'FAIL: (zz) 스냅샷 없을 때 rows-boot 가 목록을 못 냄'; exit 1; }
+[ -f "$STATE/bootstale" ] && { echo 'FAIL: (zz) 스냅샷이 없는데 bootstale 표시됨'; exit 1; }
+tmm rows-cur >/dev/null; [ -s "$STATE/rows.snap" ] || { echo 'FAIL: (zz) rows-cur 가 스냅샷을 안 남김'; exit 1; }
+printf 'FAKE\tFAKE_SNAP_SESSION\tFAKE\n' > "$STATE/rows.snap"
+b_out="$(tmm rows-boot)"; printf '%s\n' "$b_out" | grep -q 'FAKE_SNAP_SESSION' || { echo 'FAIL: (zz) 스냅샷이 즉시 부팅에 안 쓰임'; exit 1; }
+printf '%s\n' "$b_out" | grep -q 'TMM_VERIFY_A' && { echo 'FAIL: (zz) 스냅샷 부팅이 스캔을 기다림(실제 목록이 섞임)'; exit 1; }
+[ -f "$STATE/bootstale" ] || { echo 'FAIL: (zz) 스냅샷 부팅인데 bootstale 없음'; exit 1; }
+tmm boot-reload | grep -q 'reload(' || { echo 'FAIL: (zz) boot-reload 가 reload 를 안 냄'; exit 1; }
+[ -f "$STATE/bootstale" ] && { echo 'FAIL: (zz) boot-reload 후 bootstale 이 안 지워짐(재부팅마다 두 번 갱신)'; exit 1; }
+[ -z "$(tmm boot-reload)" ] || { echo 'FAIL: (zz) 스냅샷 부팅이 아니면 boot-reload 는 빈 출력이어야 함'; exit 1; }
+touch -t 202001010000 "$STATE/rows.snap"; tmm rows-boot | cut -f2 | grep -q 'FAKE_SNAP_SESSION' && { echo 'FAIL: (zz) 30분 넘은 스냅샷을 씀'; exit 1; }
+tmm mode wait h; printf 'FAKE\tFAKE_SNAP_SESSION\tFAKE\n' > "$STATE/rows.snap"; tmm rows-boot | grep -q 'FAKE_SNAP_SESSION' && { echo 'FAIL: (zz) 시간순이 아닌 모드에서 스냅샷을 씀'; exit 1; }
+tmm mode time; rm -f "$STATE/rows.snap" "$STATE/bootstale" "$EPC" "$EPC.bak"
+grep -q '"lsof", "-Fn", "-c", "claude"' "$ROOT/core/libexec/tmm-dead-scan.py" || { echo 'FAIL: (zz) dead-scan lsof 가 전체 스캔으로 되돌아감(5초)'; exit 1; }
+
+# (zc) 탭별 커서 기억 · 세션명 추적 — 탭을 옮겼다 돌아오면 그 탭에서 마지막으로 있던 세션에 커서가 간다(전엔 늘 맨 위 · 줄 전체로 추적해 갱신마다 튐)
+# 0.8.2: 목록 fzf 는 --track 만 — --id-nth 는 reload 동안 키를 버리고 reload 뒤 액션을 버린다(커서 고정은 TMM_CUR→wantpos→load 로). 분류 칸 fzf(--id-nth=1)는 reload 가 파일 읽기라 예외
+grep -q -- '--tiebreak=index --track --scheme=path' "$TMM" || { echo 'FAIL: (zc) 목록 fzf 에 --track 이 없음'; exit 1; }
+grep -q -- '--track --id-nth=2' "$TMM" && { echo 'FAIL: (zc) 목록 fzf 에 --id-nth=2 가 돌아옴(reload 중 키 입력 증발 · ^D 헤더 안 바뀜 회귀)'; exit 1; }
+for n in TABX_A TABX_B TABY_A; do tm has-session -t "=$n" 2>/dev/null || tm new-session -d -s "$n"; done
+sleep 0.3; tmm view live >/dev/null; tmm mode time; : > "$STATE/tab"; rm -f "$STATE/tabcur" "$STATE/tabrows"; tmm rows-cur >/dev/null
+printf 'tabx\n' > "$STATE/tabsel"; tmm rows-cur >/dev/null
+tabx_n="$(tmm rows-cur | cut -f2 | grep -nx 'TABX_B' | cut -d: -f1)"
+[ -n "$tabx_n" ] || { echo 'FAIL: (zc) tabx 탭에 TABX_B 가 없음'; exit 1; }
+go="$(tmm tabkey next TABX_B)"     # tabx 를 TABX_B 에 둔 채 떠난다
+printf '%s\n' "$go" | grep -q '^reload(cat ' || { echo "FAIL: (zc) 탭 전환이 reload(cat …) 가 아님: $go"; exit 1; }
+printf '%s\n' "$go" | grep -q 'reload-sync' && { echo 'FAIL: (zc) reload-sync 는 --track 이 pos 를 덮어 쓸 수 없다'; exit 1; }
+[ "$(awk -F'\t' '$1=="tabx"{print $2}' "$STATE/tabcur")" = TABX_B ] || { echo 'FAIL: (zc) 떠나는 탭의 커서가 저장 안 됨'; cat "$STATE/tabcur"; exit 1; }
+[ "$(cat "$STATE/tabsel")" != tabx ] || { echo 'FAIL: (zc) 탭이 안 옮겨짐'; exit 1; }
+back="$(tmm tabkey prev "$(tmm rows-cur | cut -f2 | sed -n 1p)")"   # 돌아온다
+[ "$(cat "$STATE/tabsel")" = tabx ] || { echo "FAIL: (zc) prev 로 tabx 에 못 돌아옴: $(cat "$STATE/tabsel")"; exit 1; }
+[ "$(cat "$STATE/wantpos")" = "$tabx_n" ] || { echo "FAIL: (zc) tabx 로 돌아왔는데 기억한 TABX_B(줄 $tabx_n)를 wantpos 에 안 적음: $(cat "$STATE/wantpos")"; exit 1; }
+onl="$(tmm onload)"; printf '%s\n' "$onl" | grep -q "+pos($tabx_n)\$" || { echo "FAIL: (zc) load 이벤트가 pos($tabx_n) 를 안 줌: $onl"; exit 1; }
+[ -f "$STATE/wantpos" ] && { echo 'FAIL: (zc) wantpos 가 소비되지 않음(20초 갱신마다 커서가 끌려감)'; exit 1; }
+tmm onload | grep -q 'pos(' && { echo 'FAIL: (zc) wantpos 없는 load 가 pos 를 줌'; exit 1; }
+# 기억이 없고 지금 세션도 새 탭에 없으면 맨 위
+rm -f "$STATE/tabcur"; printf 'tabx\n' > "$STATE/tabsel"
+tmm tabkey next TABX_B >/dev/null; [ -n "$(cat "$STATE/wantpos" 2>/dev/null)" ] || { echo 'FAIL: (zc) 기억 없는 탭 이동에 wantpos(1 이상)가 없음'; exit 1; }
+rm -f "$STATE/wantpos"
+# 부팅(start) 때 기억한 커서 복원 — shown 은 마지막으로 그린 목록
+rm -f "$STATE/tabcur"; printf 'tabx\n' > "$STATE/tabsel"; tmm rows-cur >/dev/null
+printf 'tabx\tTABX_B\n' > "$STATE/tabcur"
+tmm boot-reload | grep -q "pos($tabx_n)" || { echo "FAIL: (zc) boot-reload 가 기억한 커서(pos $tabx_n)를 복원 안 함: $(tmm boot-reload)"; exit 1; }
+# 목록 뷰 키는 'list'
+rm -f "$STATE/tab" "$STATE/tabcur"; [ "$(printf 'x'; bash -c 'source "'"$TMM"'" __lib; RUN="'"$STATE"'"; cur_tab_key')" = xlist ] || { echo 'FAIL: (zc) 목록 뷰 커서 키가 list 가 아님'; exit 1; }
+rm -f "$STATE/tabsel" "$STATE/tabcur" "$STATE/tabrows"
+
+# (z) 카테고리 일반화 — 역할 접두(FB_·ft-)를 뗀 첫 토큰. 프로젝트별 규칙을 늘리지 않고 같은 프로젝트가 한 탭에 모인다
+CAT_FILE="$ROOT/core/categories.example"
+eval "$(sed -n '/^cat_of()/,/^}/p' "$TMM")"
+_cat() { cat_of "$1"; }
+for pair in 'FB_CCU#0:ccu' 'CCU_ARCH#3:ccu' 'FB_CFO#33:cfo' 'CFO_F_NANO#17:cfo' 'cfo_x#1:cfo' 'ft-v65-master-claude#86:v65' 'ft-airag-arch-astra:airag' \
+            'ft-kakao-impl#2:kakao' 'KakaoBot#5:kakao' 'FB_VEC_IMPL#5:vec' 'LOOM_A#1:loom' 'loom_a#1:loom' 'DATA_PG:loom' 'plain-shell:plain' 'FB_KK#0:kk' 'ft-kk-temp-x#0:kk' 'FB_ARCHDOC#8:archdoc'; do
+  got="$(_cat "${pair%%:*}")"; [ "$got" = "${pair#*:}" ] || { echo "FAIL: (z) cat_of ${pair%%:*} → '$got' (기대 ${pair#*:})"; exit 1; }
+done
+[ "$(TMM_CAT_STRIP='X_' _cat 'X_ABC#1')" = abc ] || { echo 'FAIL: (z) TMM_CAT_STRIP 로 접두 변경 안 됨'; exit 1; }
+[ "$(_cat 'ft-')" = 'ft' ] || { echo "FAIL: (z) 접두만 있는 이름(ft-)이 빈 라벨: '$(_cat 'ft-')'"; exit 1; }
+# r1716 qa 좌석 = 역할 예약어 qa → 팀 라벨(leaf)
+got="$(TMM_CAT_SESSIONS="" _cat 'biz-harness-qa-ft20-pi#10')"; [ "$got" = harness ] || { echo "FAIL: (z) cat_of qa 좌석 leaf → '$got' (기대 harness)"; exit 1; }
+
+# (hd) 프로젝트(1depth) → 팀(2depth) 트리(0.9.0) — 사용자 2026-10-20 «2depth 명으로 팀그룹핑해서 노출하는데 1depth 분리 필요»
+#   cat_of key 모드 = «프로젝트/팀» · 구 접두(ft- FB_)·규칙 라벨·폴백은 «/ 없는 leaf» · 같은 팀 글자를 다른 프로젝트가 써도 프로젝트로 갈려 충돌 접두(b-)가 필요 없다
+for pair in 'biz-harness-master-claude#8:biz/harness' 'biz-ops-arch-claude#1:biz/ops' 'aifp-worker-master-claude#0:aifp/worker' 'acme-harness-master-claude#1:acme/harness' 'biz-harness-qa-ft20-pi#10:biz/harness' \
+            'ft-v65-master-claude#86:v65' 'FB_CCU#0:ccu' 'KakaoBot#5:kakao' 'plain-shell:plain'; do
+  got="$(TMM_CAT_SESSIONS="" cat_of "${pair%%:*}" key)"; [ "$got" = "${pair#*:}" ] || { echo "FAIL: (hd) cat_of key ${pair%%:*} → '$got' (기대 ${pair#*:})"; exit 1; }
+done
+# tab_rows — 팀이 둘 이상인 프로젝트 = 프로젝트 줄 + 팀 줄 · 팀 하나(aifp)·leaf(kakao) = 한 줄 · 프로젝트 줄을 고르면 그 프로젝트 전체, 팀 줄은 그 팀만(카테고리 열은 프로젝트 줄에서만 남는다)
+HD="$SOCK_DIR/hd.rows"
+printf '%s\n' \
+  "$(printf '● h1 DONE\tbiz-harness-master-claude#1\tbiz/harness')" \
+  "$(printf '● h2 HUMAN \tbiz-harness-arch-claude#1\tbiz/harness')" \
+  "$(printf '● o1 DONE\tbiz-ops-master-claude#1\tbiz/ops')" \
+  "$(printf '● k1 DONE\tKakaoBot#1\tkakao')" \
+  "$(printf '● a1 DONE\taifp-worker-master-claude#0\taifp/worker')" > "$HD"
+rm -f "$STATE/tabsel"
+lib "tab_rows < '$HD' > /dev/null"
+[ "$(cut -f1 "$STATE/tabs" | tr '\n' ' ')" = 'biz biz/harness biz/ops kakao aifp * ' ] || { echo "FAIL: (hd) tabs 키 순서/구조: $(cut -f1 "$STATE/tabs" | tr '\n' ' ')"; exit 1; }
+[ "$(awk -F'\t' '$1=="biz"{print $2":"$3}' "$STATE/tabs")" = '3:1' ] && [ "$(awk -F'\t' '$1=="biz/harness"{print $2":"$3}' "$STATE/tabs")" = '2:1' ] || { echo "FAIL: (hd) 프로젝트/팀 수·대기 합산: $(cat "$STATE/tabs")"; exit 1; }
+printf 'biz\n' > "$STATE/tabsel"; [ "$(lib "tab_rows < '$HD'" | wc -l | tr -d ' ')" = 3 ] || { echo 'FAIL: (hd) 프로젝트 줄 biz 는 3행(그 프로젝트 전체)'; exit 1; }
+printf 'biz/harness\n' > "$STATE/tabsel"; [ "$(lib "tab_rows < '$HD'" | wc -l | tr -d ' ')" = 2 ] || { echo 'FAIL: (hd) 팀 줄 biz/harness 는 2행'; exit 1; }
+printf 'kakao\n' > "$STATE/tabsel"; [ "$(lib "tab_rows < '$HD'" | wc -l | tr -d ' ')" = 1 ] || { echo 'FAIL: (hd) leaf kakao 는 1행'; exit 1; }
+printf 'aifp\n' > "$STATE/tabsel"; [ "$(lib "tab_rows < '$HD'" | wc -l | tr -d ' ')" = 1 ] || { echo 'FAIL: (hd) 팀 하나짜리 프로젝트 aifp 는 한 줄 키로 1행'; exit 1; }
+printf 'gone\n' > "$STATE/tabsel"; [ "$(lib "tab_rows < '$HD'" | wc -l | tr -d ' ')" = 3 ] || { echo 'FAIL: (hd) 사라진 키는 첫 줄(biz 전체 3행)로'; exit 1; }
+# 분류 칸 라벨 — 프로젝트 줄 굵게·팀 줄 들여쓰기(좁은 칸 팀 4자, 넓은 칸 팀 6자)
+printf '11' > "$STATE/catw"; cr="$(tmm catrows)"
+printf '%s\n' "$cr" | sed -n 1p | sed 's/\x1b\[[0-9;]*m//g' | grep -q $'^biz\tbiz   3⚠1$' || { echo "FAIL: (hd) 좁은 칸 프로젝트 줄: $(printf '%s\n' "$cr" | sed -n 1p)"; exit 1; }
+printf '%s\n' "$cr" | sed -n 2p | sed 's/\x1b\[[0-9;]*m//g' | grep -q $'^biz/harness\t harn 2⚠1$' || { echo "FAIL: (hd) 좁은 칸 팀 줄(한 칸 들여쓰기·4자): $(printf '%s\n' "$cr" | sed -n 2p)"; exit 1; }
+printf '16' > "$STATE/catw"; tmm catrows | sed -n 2p | sed 's/\x1b\[[0-9;]*m//g' | grep -q $'^biz/harness\t  harnes  2⚠1$' || { echo "FAIL: (hd) 넓은 칸 팀 줄(두 칸 들여쓰기·6자): $(tmm catrows | sed -n 2p)"; exit 1; }
+rm -f "$STATE/tabs" "$STATE/tabsel" "$STATE/catw" "$HD"
+
+# ---------- 0.8.2 — 종료 뷰 창 확장·입력 막힘·종료 스캔 속도 ----------
+# (rl) reload 지점은 전부 커서 세션·질의를 넘긴다 — 빠진 곳은 갱신 뒤 커서가 튄다
+bare="$(grep -c 'reload($SELF rows-cur\|reload(%s rows-cur' "$TMM" || true)"
+[ "$bare" = 0 ] || { echo "FAIL: (rl) TMM_CUR 없이 rows-cur 를 reload 하는 곳 $bare 개"; grep -n 'reload($SELF rows-cur\|reload(%s rows-cur' "$TMM"; exit 1; }
+[ "$(grep -c 'reload(TMM_CUR={2} TMM_Q={q} ' "$TMM")" -ge 10 ] || { echo 'FAIL: (rl) TMM_CUR={2} reload 지점이 10 개 미만'; exit 1; }
+# (wp) rows-cur 가 커서 세션의 «화면 순서»를 wantpos 에 — 질의가 있으면 목록 fzf 와 같은 매치 순서
+for n in WPX_A WPX_B WPY_A; do tm has-session -t "=$n" 2>/dev/null || tm new-session -d -s "$n"; done
+sleep 0.3; tmm view live >/dev/null; tmm mode time; rm -f "$STATE/tab" "$STATE/wantpos"
+tmm rows-cur > "$SOCK_DIR/wp.rows"
+[ -f "$STATE/wantpos" ] && { echo 'FAIL: (wp) TMM_CUR 없이도 wantpos 를 씀'; exit 1; }
+want="$(awk -F'\t' '$2=="WPX_B"{print NR; exit}' "$SOCK_DIR/wp.rows")"
+env -u TMUX -u TMM_RUN TMUX_TMPDIR="$SOCK_DIR" TMPDIR="$SOCK_DIR" TMM_SCAN="$SCAN" TMM_CACHE_TTL=0 TMM_CATEGORIES=/dev/null TMM_CUR=WPX_B TMM_Q= "$TMM" rows-cur >/dev/null
+[ "$(cat "$STATE/wantpos" 2>/dev/null)" = "$want" ] || { echo "FAIL: (wp) 질의 없음 wantpos≠$want: $(cat "$STATE/wantpos" 2>/dev/null)"; exit 1; }
+rm -f "$STATE/wantpos"
+qwant="$(fzf --filter 'wpx' --ansi --delimiter=$'\t' --with-nth=1 --nth=1,3 --tiebreak=index --scheme=path < "$SOCK_DIR/wp.rows" | awk -F'\t' '$2=="WPX_B"{print NR; exit}')"
+env -u TMUX -u TMM_RUN TMUX_TMPDIR="$SOCK_DIR" TMPDIR="$SOCK_DIR" TMM_SCAN="$SCAN" TMM_CACHE_TTL=0 TMM_CATEGORIES=/dev/null TMM_CUR=WPX_B TMM_Q=wpx "$TMM" rows-cur >/dev/null
+[ -n "$qwant" ] && [ "$(cat "$STATE/wantpos" 2>/dev/null)" = "$qwant" ] || { echo "FAIL: (wp) 질의 wpx 의 매치 순서≠$qwant: $(cat "$STATE/wantpos" 2>/dev/null)"; exit 1; }
+printf '7\n' > "$STATE/wantpos"
+env -u TMUX -u TMM_RUN TMUX_TMPDIR="$SOCK_DIR" TMPDIR="$SOCK_DIR" TMM_SCAN="$SCAN" TMM_CACHE_TTL=0 TMM_CATEGORIES=/dev/null TMM_CUR=WPX_B "$TMM" rows-cur >/dev/null
+[ "$(cat "$STATE/wantpos")" = 7 ] || { echo 'FAIL: (wp) 탭 전환이 남긴 wantpos 를 자동 갱신이 덮음'; exit 1; }
+tmm onload | grep -q '+pos(7)$' || { echo 'FAIL: (wp) load 가 wantpos 를 pos 로 안 줌'; exit 1; }
+# (dh) 종료 뷰 헤더는 스캔하지 않는다(캐시 없으면 «…건») + load 때 다시 그린다
+tmm view dead >/dev/null; rm -f "$STATE/dead.tsv"
+tmm header | sed 's/\x1b\[[0-9;]*m//g' | grep -q '창 [0-9]*h · …건' || { echo "FAIL: (dh) 캐시 없는 종료 헤더가 «…건» 이 아님: $(tmm header | tail -1)"; exit 1; }
+[ -f "$STATE/dead.tsv" ] && { echo 'FAIL: (dh) 헤더가 종료 스캔을 돌림(화면 멈춤 회귀)'; exit 1; }
+tmm onload | grep -q 'transform-header' || { echo 'FAIL: (dh) 종료 뷰 load 가 헤더(새 개수)를 안 다시 그림'; exit 1; }
+printf 'x\n' > "$STATE/dead.tsv"; tmm since + >/dev/null
+[ -f "$STATE/dead.tsv" ] && { echo 'FAIL: (dh) 창을 바꿨는데 옛 개수 캐시가 남음(새 창에 옛 개수 표시)'; exit 1; }
+printf 'x\n' > "$STATE/dead.tsv"; tmm gen >/dev/null; tmm gen >/dev/null
+[ -f "$STATE/dead.tsv" ] && { echo 'FAIL: (dh) 계보를 바꿨는데 옛 개수 캐시가 남음'; exit 1; }
+rm -f "$STATE/since"
+tmm view live >/dev/null
+# (cf) 분류 칸에서 누른 ^] ^\ ^L 도 목록 칸으로 넘어간다 — ] \ 는 바이트로
+sed -n '/^cmd_catpane()/,/^}/p' "$TMM" | grep -q 'ctrl-\]:execute-silent(\$SELF catfwd hex:1d)' || { echo 'FAIL: (cf) 분류 칸이 ^] 를 안 넘김'; exit 1; }
+sed -n '/^cmd_catpane()/,/^}/p' "$TMM" | grep -q 'catfwd hex:1c' || { echo 'FAIL: (cf) 분류 칸이 ^\ 를 안 넘김'; exit 1; }
+sed -n '/^cmd_catpane()/,/^}/p' "$TMM" | grep -q 'ctrl-l:execute-silent(\$SELF catfwd C-l)' || { echo 'FAIL: (cf) 분류 칸이 ^L 를 안 넘김'; exit 1; }
+tm new-session -d -s CFWD -x 60 -y 6 "stty -isig; cat -v"; sleep 0.4   # ^\ 는 tty 에서 SIGQUIT — 시험용 cat 이 죽지 않게(fzf 는 raw 라 그대로 받는다)
+printf '%s' "$(tm display -p -t '=CFWD:' '#{pane_id}')" > "$STATE/mainpane"
+tmm catfwd hex:1d; tmm catfwd hex:1c; tm send-keys -t '=CFWD:' Enter; sleep 0.4
+tm capture-pane -t '=CFWD:' -p | grep -qF '^]^\' || { echo "FAIL: (cf) catfwd hex 가 ^]^\\ 바이트를 안 보냄: $(tm capture-pane -t '=CFWD:' -p | head -2)"; exit 1; }
+tm kill-session -t '=CFWD' 2>/dev/null; rm -f "$STATE/mainpane"
+# (dc) 종료 스캔 파일별 캐시 — 같으면 재사용(독 넣은 캐시 값이 그대로 나옴), 파일이 바뀌면 다시 읽음, 결과는 캐시 없을 때와 같음
+DC="$SOCK_DIR/dc.cache.json"; rm -f "$DC"
+dscan() { env TMPDIR="$SOCK_DIR" TMM_DEAD_CACHE="${DCX:-$DC}" TMM_CLAUDE_GLOB="$FIX/.claude/projects/*/*.jsonl" TMM_CODEX_GLOB="$FIX/.codex/sessions/*/*/*/rollout-*.jsonl" \
+  TMM_CMD_GLOB="$FIX/.commandcode/projects/*/*.jsonl" TMM_OPENCODE_DB=/nonexistent TMM_SNAPSHOT="$FIX/nosnap.json" python3 "$ROOT/core/libexec/tmm-dead-scan.py" scan --since 99999 --all-gen; }
+d1="$(dscan | sort)"; [ -s "$DC" ] || { echo 'FAIL: (dc) 캐시 파일이 안 생김'; exit 1; }
+d2="$(dscan | sort)"; [ "$d1" = "$d2" ] || { echo 'FAIL: (dc) 캐시 적중 결과가 첫 실행과 다름'; diff <(echo "$d1") <(echo "$d2") | head; exit 1; }
+d0="$(DCX=/nonexistent/dir/x.json dscan | sort)"; [ "$d0" = "$d1" ] || { echo 'FAIL: (dc) 캐시를 쓸 수 없을 때 결과가 다름'; exit 1; }
+d1="$(dscan | sort)"
+CCF="$(ls "$FIX"/.claude/projects/*/"$SID_CC".jsonl | head -1)"
+[ -f "$CCF" ] || { echo 'FAIL: (dc) 픽스처 트랜스크립트 없음'; exit 1; }
+python3 - "$DC" "$CCF" <<'PYC'
+import json,sys; p,f=sys.argv[1:3]; d=json.load(open(p)); d["files"][f]["m"]["name"]="POISON-CACHE#9"; json.dump(d,open(p,"w"))
+PYC
+dscan | grep -q 'POISON-CACHE' || { echo 'FAIL: (dc) 같은 파일인데 캐시를 안 쓰고 다시 읽음(매번 재파싱)'; exit 1; }
+mt="$(stat -f %m "$CCF")"; printf '\n' >> "$CCF"; touch -t "$(date -r "$mt" +%Y%m%d%H%M.%S)" "$CCF"
+dscan | grep -q 'POISON-CACHE' && { echo 'FAIL: (dc) 파일 크기가 바뀌었는데 낡은 캐시를 씀'; exit 1; }
+dscan | grep -q "$SID_CC" || { echo 'FAIL: (dc) 다시 읽은 뒤 그 세션이 사라짐'; exit 1; }
+# 창을 줄여도(그 파일이 창 밖) 이미 읽은 결과는 캐시에 남는다 — 다시 넓힐 때 재파싱 0
+env TMPDIR="$SOCK_DIR" TMM_DEAD_CACHE="$DC" TMM_CLAUDE_GLOB="$FIX/.claude/projects/*/*.jsonl" TMM_CODEX_GLOB=/nonexistent TMM_CMD_GLOB=/nonexistent \
+  TMM_OPENCODE_DB=/nonexistent TMM_SNAPSHOT="$FIX/nosnap.json" python3 "$ROOT/core/libexec/tmm-dead-scan.py" scan --since 0 >/dev/null
+python3 - "$DC" "$CCF" <<'PYC' || { echo 'FAIL: (dc) 창을 줄였더니 창 밖 파일의 캐시가 지워짐'; exit 1; }
+import json,sys; p,f=sys.argv[1:3]; sys.exit(0 if f in json.load(open(p))["files"] else 1)
+PYC
+
+# (pi) Pi 에이전트 지원(0.9.1) — 복구 커맨드·미지원 에이전트 가드. 순수 함수만 잰다(좌석 프로세스 판정 live_agent_of 는 tmux 가 필요해 건너뛴다)
+eval "$(sed -n '/^restore_cmd_for()/,/^}/p;/^with_1m()/p' "$TMM")"
+[ "$(restore_cmd_for pi '' SIDX NAMEX '')" = 'pi --name NAMEX --session SIDX --thinking medium' ]
+# effort 를 알면 그 값을 그대로 남긴다(스냅샷 effort · 0.9.4)
+[ "$(restore_cmd_for pi '' SIDX NAMEX '' 'high')" = 'pi --name NAMEX --session SIDX --thinking high' ] || { echo 'FAIL: (pi3b) pi 복구 커맨드가 스냅샷 effort 를 안 쓴다'; exit 1; } || { echo "FAIL: (pi) pi 복구 커맨드: $(restore_cmd_for pi '' SIDX NAMEX '')"; exit 1; }
+[ "$(restore_cmd_for pi '' SIDX NAMEX 'pi --custom')" = 'pi --custom' ] || { echo 'FAIL: (pi) 스냅샷 resume 커맨드를 존중하지 않음'; exit 1; }
+restore_cmd_for nosuch '' S N '' >/dev/null 2>&1 && { echo 'FAIL: (pi) 미지원 에이전트가 통과함'; exit 1; }
+grep -q '^  *case "\$agent" in claude|codex|opencode|cmd|pi)' "$TMM" || { echo 'FAIL: (pi) fork 지원 에이전트 목록에 pi 없음'; exit 1; }
+grep -q 'pi|\*/pi|pi\\ \*|\*pi-coding-agent\*) echo pi' "$TMM" || { echo 'FAIL: (pi) live_agent_of 에 pi 분기 없음'; exit 1; }
+
+# (pi2) pi 좌석 표시(0.9.2) — 모델 칸·상태. 2026-10-20 오빠 «파이가 첫 투입됐는데 tmm에 도구 이름이 노출이 안된다 · 상태도 정상 표시되는지»
+#   원인: ①pi 는 프로세스 이름이 `pi` 로 바뀌어 argv 에 --model 이 없다(모델 칸 `?`) ②seat-scan 은 Claude 하단 줄이 있어야 IDLE 이라 pi 는 영영 BUSY.
+eval "$(sed -n '/^pi_footer_model()/,/^}/p;/^model_short()/,/^}/p' "$TMM")"
+for pair in 'opengateway/deepseek/deepseek-v4.1-flash-ultrafast:ds41fu' 'openrouter/deepseek/deepseek-v4-pro:ds4p' 'openrouter/deepseek/deepseek-v4-flash:ds4f' 'opencode/deepseek-v4.1-flash-free:ds41ff' 'claude-opus-5-5[1m]:op55·1m' 'gpt-6.1-sol:sol'; do
+  got="$(model_short "${pair%:*}")"; [ "$got" = "${pair##*:}" ] || { echo "FAIL: (pi2) model_short ${pair%:*} → '$got' (기대 ${pair##*:})"; exit 1; }
+done
+[ "$(model_short '')" = '?' ] || { echo 'FAIL: (pi2) 빈 모델은 ?'; exit 1; }
+[ "$(printf '%s\n' '~/p (pi/master) • aifp-pi-master-pi#0' '↑171k ↓42k R6.6M CH99.8% 10.0%/1.0M (auto)  deepseek/deepseek-v4.1-flash-ultrafast • high' | pi_footer_model)" = 'deepseek/deepseek-v4.1-flash-ultrafast' ] || { echo 'FAIL: (pi2) pi_footer_model'; exit 1; }
+[ -z "$(printf '%s\n' 'ctx:44% | Sonnet 5.5 high | x' | pi_footer_model)" ] || { echo 'FAIL: (pi2) claude 하단 줄에서 pi 모델이 나옴'; exit 1; }
+# model_short effort 2번째 인자(0.9.4) — 모델 5칸 + `·` + 2칸 약어 = 8칸. 인자 없으면 종전과 «문자 단위 동일».
+for pair in 'deepseek/deepseek-v4.1-flash-ultrafast:medium:ds41f·md' 'deepseek/deepseek-v4.1-flash-ultrafast:high:ds41f·hi' 'gpt-6-luna:low:luna·lo' 'claude-opus-5-5:off:op55·of' 'claude-sonnet-5-5:xhigh:sn55·xh'; do
+  mm="${pair%%:*}"; rest="${pair#*:}"; ee="${rest%%:*}"; want="${rest#*:}"
+  got="$(model_short "$mm" "$ee")"
+  [ "$got" = "$want" ] || { echo "FAIL: (pi3b) model_short $mm $ee → '$got' (기대 $want)"; exit 1; }
+  [ "${#got}" -le 8 ] || { echo "FAIL: (pi3b) effort 붙은 모델 칸이 8칸 초과: '$got'"; exit 1; }
+done
+[ "$(model_short 'gpt-6-luna')" = 'luna' ] || { echo 'FAIL: (pi3b) effort 없는 호출이 종전과 다르다'; exit 1; }
+# seat-scan — pi 하단 줄 + 점자 스피너 Working = BUSY · 스피너 없음 = IDLE (격리 tmux · 가짜 화면)
+PIFOOT='↑1k ↓1 R2k CH90.0% 1.0%/1.0M (auto)  deepseek/deepseek-v4.1-flash-ultrafast'
+tm new-session -d -s PIBUSY "printf '%s\n' 'x' '── ⠦ Working ───────' '~/p (b) • PIBUSY' '$PIFOOT'; sleep 600"
+tm new-session -d -s PIIDLE "printf '%s\n' 'x' '────────────────' '~/p (b) • PIIDLE' '$PIFOOT'; sleep 600"
+sleep 0.6
+SCANOUT="$(env -u TMUX TMUX_TMPDIR="$SOCK_DIR" bash "$SCAN" 2>/dev/null)"
+printf '%s\n' "$SCANOUT" | awk '$1=="PIBUSY"{print $2}' | grep -qx BUSY || { echo "FAIL: (pi2) Working 스피너가 있는 pi 좌석이 BUSY 가 아님: $(printf '%s\n' "$SCANOUT" | grep PIBUSY)"; exit 1; }
+printf '%s\n' "$SCANOUT" | awk '$1=="PIIDLE"{print $2}' | grep -qx IDLE || { echo "FAIL: (pi2) 스피너 없는 pi 좌석이 IDLE 이 아님: $(printf '%s\n' "$SCANOUT" | grep PIIDLE)"; exit 1; }
+tm kill-session -t =PIBUSY 2>/dev/null; tm kill-session -t =PIIDLE 2>/dev/null
+
+# (pi3) pi HUMAN·BLOCK 판독(0.9.3) — 2026-10-20 오빠 «pi 좌석이 인터뷰·오류 화면에서 tmm 에 멀쩡한 좌석처럼 보인다»
+#   원인: 0.9.2 pi 분기는 «점자 스피너 + Working 이 있으면 BUSY, 없으면 IDLE» 두 갈래뿐이라
+#         pi TUI 오류 화면(` Error: <3자리>: {…}`)과 사람이 고르는 화면(`Enter to select`)이 둘 다 IDLE 로 떨어졌다.
+#   픽스처 = 2026-10-20 실제 pi 1.3.0 pane 캡처 4종(test/fixtures-pi/*.txt · `tmux capture-pane -p` 원문).
+FXP="$ROOT/test/fixtures-pi"
+for f in pi-error400.txt pi-selector.txt pi-working.txt pi-idle.txt; do
+  [ -s "$FXP/$f" ] || { echo "FAIL: (pi3) 픽스처 없음: $FXP/$f"; exit 1; }
+done
+tm new-session -d -y 40 -s PIERR "cat '$FXP/pi-error400.txt'; sleep 600"
+tm new-session -d -y 40 -s PISEL "cat '$FXP/pi-selector.txt'; sleep 600"
+tm new-session -d -y 40 -s PIWORK2 "cat '$FXP/pi-working.txt'; sleep 600"
+tm new-session -d -y 40 -s PIIDLE2 "cat '$FXP/pi-idle.txt'; sleep 600"
+sleep 0.6
+SCANOUT3="$(env -u TMUX TMUX_TMPDIR="$SOCK_DIR" bash "$SCAN" 2>/dev/null)"
+pi3_want() { # $1=세션 $2=기대상태
+  local got; got="$(printf '%s\n' "$SCANOUT3" | awk -v s="$1" '$1==s{print $2}')"
+  [ "$got" = "$2" ] || { echo "FAIL: (pi3) $1 기대=$2 실제='${got:-없음}'"; exit 1; }
+}
+pi3_want PIERR   BLOCK
+pi3_want PISEL   HUMAN
+pi3_want PIWORK2 BUSY
+pi3_want PIIDLE2 IDLE
+tm kill-session -t =PIERR 2>/dev/null; tm kill-session -t =PISEL 2>/dev/null
+tm kill-session -t =PIWORK2 2>/dev/null; tm kill-session -t =PIIDLE2 2>/dev/null
+
+echo "✅ tmm verify OK"

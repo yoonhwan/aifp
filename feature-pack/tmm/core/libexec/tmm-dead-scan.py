@@ -1,0 +1,867 @@
+#!/usr/bin/env python3
+"""tmm-dead-scan — «종료된 에이전트 세션» 발견·대화 꼬리 렌더 (읽기 전용, 표준 라이브러리만).
+
+  scan  --since H [--all-gen] [--snapshot PATH] [--live NAME ...]
+        → 탭 구분 한 줄/세션:
+          src agent name cwd sid model last_msg_ts last_alive_ts base gen resume_cmd
+          (src: SNAP=tmuxc 스냅샷에 있어 argv 완제품 / CC=claude jsonl / CDX=codex / CMD=Command Code / OC=opencode)
+  tail  --sid SID [--n 40]
+        → 마지막 user/assistant 메시지 N줄을 Claude TUI 비슷한 모양으로 (SGR 색 포함)
+
+규칙 출처: tmuxc-restore-scan.py(infer_role_name/is_noise/safe_name/dedupe/tail_lines) — assistant 파서는 여기서 신설.
+시각: 레코드 timestamp 는 UTC. «마지막 생존»은 파일 mtime(로컬), «마지막 대화»는 max(timestamp).
+라이브 제외 3중: ps argv 의 session uuid · --live 로 넘어온 tmux 세션명 · 최근 TMM_LIVE_GRACE(90s) 안에 쓰인 파일(argv 에
+uuid 가 없는 신규 세션 — claude 는 트랜스크립트를 append 로 열어 lsof 에도 안 잡힌다).
+"""
+import argparse
+import glob
+import json
+import os
+import re
+import sqlite3
+import subprocess
+import sys
+import time
+from datetime import datetime
+
+HOME = os.path.expanduser("~")
+CLAUDE_GLOB = os.environ.get("TMM_CLAUDE_GLOB", os.path.join(HOME, ".claude/projects/*/*.jsonl"))
+CODEX_GLOB = os.environ.get("TMM_CODEX_GLOB", os.path.join(HOME, ".codex/sessions/*/*/*/rollout-*.jsonl"))
+CMD_GLOB = os.environ.get("TMM_CMD_GLOB", os.path.join(HOME, ".commandcode/projects/*/*.jsonl"))
+PI_GLOB = os.environ.get("TMM_PI_GLOB", os.path.join(HOME, ".pi/agent/sessions/*/*.jsonl"))
+OPENCODE_DB = os.environ.get("TMM_OPENCODE_DB", os.path.join(HOME, ".local/share/opencode/opencode.db"))
+SNAPSHOT = os.environ.get("TMM_SNAPSHOT", os.path.join(HOME, ".tmuxc/snapshots/latest.json"))
+
+NAME_RE_ME = re.compile(r"세션명\(me\)=([^\s.,]+)")
+NAME_RE_COMM = re.compile(r"\[[^\]]+?(?:->|→)([A-Za-z0-9_#\-]+)\]")
+NAME_RE_MBOX = re.compile(r"mbox\.sh recv ['\"]?([A-Za-z0-9_#\-]+)")
+NAME_COUNTER_RE = re.compile(r"^(.*?#\d+)")
+CHAIN_RE = re.compile(r"^(.*)#(\d+)$")
+MODEL_RE = re.compile(r'"model"\s*:\s*"(claude-[^"\[]+)')
+TS_RE = re.compile(r'"timestamp"\s*:\s*"([^"]+)"')
+HEADLESS_PREFIXES = ("Review the current working tree", "Respond with PONG", "Re-review")
+
+SEP = "\t"
+
+
+# ---------- 공통 ----------
+def tail_bytes(path, block):
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - block))
+            return f.read().decode("utf-8", "ignore")
+    except OSError:
+        return ""
+
+
+def head_lines(path, n):
+    out = []
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            for i, line in enumerate(f):
+                if i >= n:
+                    break
+                out.append(line)
+    except OSError:
+        pass
+    return out
+
+
+def jl(line):
+    try:
+        return json.loads(line)
+    except Exception:
+        return None
+
+
+def parse_ts(s):
+    if not s:
+        return 0
+    try:
+        return int(datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp())
+    except Exception:
+        return 0
+
+
+def safe_name(s):
+    return re.sub(r"[^A-Za-z0-9_#\-]", "-", s or "")
+
+
+def clip_role_name(name):
+    m = NAME_COUNTER_RE.match(name or "")
+    return m.group(1) if m else (name or "")
+
+
+def text_of(content, allow=("text", "input_text", "output_text")):
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        return "".join(p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") in allow).strip()
+    return ""
+
+
+def is_noise_user(t):
+    if not t or t.startswith("<") or t.startswith("#"):
+        return True
+    if any(t.startswith(p) for p in HEADLESS_PREFIXES):
+        return True
+    return False
+
+
+def infer_name(users):
+    for rx in (NAME_RE_ME, NAME_RE_COMM, NAME_RE_MBOX):
+        for u in users:
+            m = rx.search(u)
+            if m:
+                return clip_role_name(m.group(1))
+    return ""
+
+
+UUID_RE = re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b")
+
+
+def live_sids():
+    """지금 살아있는 에이전트의 session id 집합 — ps argv 의 uuid(--resume/-r/--session-id) + lsof 가 잡은 jsonl.
+    claude 는 트랜스크립트를 append 로만 열어 lsof 에 안 잡히므로(실측 0건) argv 가 주 소스다.
+    실패 시 빈 집합 — 그러면 --live(tmux 세션명) 제외만 남는다."""
+    out = set()
+    try:
+        ps = subprocess.run(["ps", "-eo", "args"], capture_output=True, text=True, timeout=5).stdout
+        for line in ps.splitlines():
+            if re.search(r"\b(claude|codex|cmd|opencode)\b", line):
+                out.update(UUID_RE.findall(line))
+    except Exception:
+        pass
+    try:
+        # ★에이전트 프로세스로 범위를 좁힌다★ — 시스템 전체 `lsof -Fn` 이 종료 뷰 스캔 6.3초 중 5.8초였다(실측 2026-09-30, 결과 동일·0.16초).
+        lo = subprocess.run(["lsof", "-Fn", "-c", "claude", "-c", "codex", "-c", "opencode", "-c", "cmd", "-c", "node"],
+                            capture_output=True, text=True, timeout=8).stdout
+        for l in lo.splitlines():
+            if l.startswith("n") and l.endswith(".jsonl"):
+                out.update(UUID_RE.findall(l))
+    except Exception:
+        pass
+    return out
+
+
+def infer_agent_from_resume(resume):
+    r = (resume or "").strip()
+    first = r.split(None, 1)[0] if r else ""
+    base = os.path.basename(first)
+    if base == "pi":
+        return "pi"
+    if base in ("claude", "claude-hr.sh") or "claude" in base:
+        return "claude"
+    if base == "codex":
+        return "codex"
+    if base == "opencode":
+        return "opencode"
+    if base in ("cmd", "cmdc"):
+        return "cmd"
+    return ""
+
+
+def load_snapshot(path):
+    """session_id → (name, resume_cmd, model, effort). 없으면 빈 dict."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            doc = json.load(f)
+    except Exception:
+        return {}
+    out = {}
+    for s in doc.get("sessions", []):
+        sid = s.get("session_id") or ""
+        if sid and s.get("resume_cmd"):
+            out[sid] = (
+                s.get("name") or "",
+                s["resume_cmd"],
+                s.get("model") or "",
+                s.get("effort") or "",
+                s.get("agent") or "",
+                s.get("cwd") or "",
+            )
+    return out
+
+
+# ---------- claude ----------
+# ★파일별 파싱 캐시(0.8.2)★ — 창 안 후보(12h ≈400개, 24h ≈800개)의 앞 120줄·끝 400KB 를 매번 다시 읽던 것이 스캔 시간의 절반이었다(부하 시 12h 4.4초 · 24h 8.8초).
+#   (경로, 수정 시각, 크기)가 같으면 직전에 읽은 결과를 그대로 쓴다. 트랜스크립트는 읽기만 한다 — 캐시는 TMPDIR 아래 따로 둔다(verify 의 격리 TMPDIR 이 실사용본을 안 건드림).
+#   «시간에 따라 바뀌는» 판정(창·라이브 여유·열린 sid·cwd 존재·라이브 이름)은 캐시하지 않고 매번 한다.
+CLAUDE_CACHE = os.environ.get("TMM_DEAD_CACHE", os.path.join(os.environ.get("TMPDIR", "/tmp"), "tmm-%d" % os.getuid(), "dead-claude.cache.json"))
+
+
+def _load_cache(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) and d.get("v") == 1 else {"v": 1, "files": {}}
+    except Exception:
+        return {"v": 1, "files": {}}
+
+
+def _save_cache(path, d):
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = "%s.%d.tmp" % (path, os.getpid())
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(d, f, ensure_ascii=False)
+        os.replace(tmp, path)
+    except Exception:
+        pass
+
+
+def _parse_claude(path):
+    """트랜스크립트 하나의 «안 변하는» 메타(이름·cwd·모델·마지막 메시지 시각). 옛 본문과 같은 규칙 — 사이드체인이면 사용자 발화만 비운다."""
+    name = cwd = branch = ""
+    users = []
+    for line in head_lines(path, 120):
+        o = jl(line)
+        if not o:
+            continue
+        if not name and o.get("agentName"):
+            name = o["agentName"]
+        if not cwd and o.get("cwd"):
+            cwd = o["cwd"]
+        if not branch and o.get("gitBranch"):
+            branch = o["gitBranch"]
+        if o.get("type") == "user" and not o.get("isMeta") and not o.get("isSidechain"):
+            t = text_of((o.get("message") or {}).get("content"))
+            if not is_noise_user(t):
+                users.append(t)
+        if o.get("isSidechain"):
+            users = []
+            break
+    tail = tail_bytes(path, 400 * 1024)
+    last_ts = 0
+    for m in TS_RE.finditer(tail):
+        last_ts = max(last_ts, parse_ts(m.group(1)))
+    models = {}
+    for m in MODEL_RE.finditer(tail):
+        models[m.group(1)] = models.get(m.group(1), 0) + 1
+    model = max(models.items(), key=lambda kv: kv[1])[0] if models else ""
+    if not name and cwd:
+        name = infer_name(users) or (os.path.basename(cwd) + "#0")
+    return {"name": name, "cwd": cwd, "model": model, "last_msg": last_ts}
+
+
+def scan_claude(since_epoch, live_names, opened):
+    rows = []
+    cache = _load_cache(CLAUDE_CACHE)
+    old, new = cache.get("files", {}), {}
+    now = time.time()
+    for path in glob.glob(CLAUDE_GLOB):
+        if "/subagents/" in path:
+            continue
+        try:
+            st = os.stat(path)
+        except OSError:
+            continue
+        mtime = st.st_mtime
+        sid = os.path.basename(path)[:-6]
+        if mtime < since_epoch or now - mtime < LIVE_GRACE or sid in opened:
+            # 창 밖·라이브 파일도 «이미 읽은 결과»는 남긴다 — 창을 줄였다 다시 넓힐 때 또 읽지 않게. 사라진 파일만 빠진다.
+            if path in old:
+                new[path] = old[path]
+            continue
+        key = "%d:%d:%d" % (st.st_mtime_ns, st.st_size, st.st_ino)
+        hit = old.get(path)
+        if hit and hit.get("k") == key:
+            meta = hit.get("m")
+        else:
+            meta = _parse_claude(path)
+        new[path] = {"k": key, "m": meta}
+        name, cwd, model, last_ts = meta["name"], meta["cwd"], meta["model"], meta["last_msg"]
+        if not cwd or not os.path.isdir(cwd) or "/scratchpad/" in cwd or cwd.startswith("/private/tmp/") or cwd.startswith("/tmp/"):
+            continue   # 사라진 cwd·스크래치패드·임시 디렉터리 세션은 복구 가치 없음 (프로브·일회성)
+        if name in live_names:
+            continue
+        rows.append(dict(src="CC", agent="claude", name=safe_name(name), cwd=cwd, sid=sid, model=model,
+                         last_msg=last_ts, last_alive=int(mtime), resume=""))
+    if new != old:
+        _save_cache(CLAUDE_CACHE, {"v": 1, "files": new})
+    return rows
+
+
+def tail_claude(path, n):
+    msgs = []
+    for line in tail_bytes(path, 600 * 1024).splitlines():
+        o = jl(line)
+        if not o or o.get("isSidechain"):
+            continue
+        t = o.get("type")
+        if t == "user" and not o.get("isMeta"):
+            txt = text_of((o.get("message") or {}).get("content"))
+            if txt and not txt.startswith("<"):
+                msgs.append(("user", o.get("timestamp", ""), txt))
+        elif t == "assistant":
+            txt = text_of((o.get("message") or {}).get("content"))
+            if txt:
+                msgs.append(("assistant", o.get("timestamp", ""), txt))
+    return msgs[-n:]
+
+
+# ---------- codex ----------
+def scan_codex(since_epoch, live_names, opened):
+    rows = []
+    for path in glob.glob(CODEX_GLOB):
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            continue
+        if mtime < since_epoch or time.time() - mtime < LIVE_GRACE:
+            continue
+        head = head_lines(path, 40)
+        meta = None
+        for line in head:
+            o = jl(line)
+            if o and o.get("type") == "session_meta":
+                meta = o.get("payload") or {}
+                break
+        if not meta:
+            continue
+        src = meta.get("source")
+        if src == "exec" or isinstance(src, dict):
+            continue
+        sid = meta.get("session_id") or meta.get("id") or os.path.basename(path)
+        if sid in opened:
+            continue
+        cwd = meta.get("cwd") or ""
+        users = []
+        for line in head:
+            o = jl(line)
+            if not o:
+                continue
+            p = o.get("payload") or {}
+            if o.get("type") == "response_item" and p.get("type") == "message" and p.get("role") == "user":
+                t = text_of(p.get("content"))
+                if not is_noise_user(t):
+                    users.append(t)
+        name = infer_name(users) or ("codex-" + sid[:8])
+        if name in live_names:
+            continue
+        last_ts = 0
+        for m in TS_RE.finditer(tail_bytes(path, 64 * 1024)):
+            last_ts = max(last_ts, parse_ts(m.group(1)))
+        rows.append(dict(src="CDX", agent="codex", name=safe_name(name), cwd=cwd, sid=sid, model="",
+                         last_msg=last_ts, last_alive=int(mtime), resume=""))
+    return rows
+
+
+def tail_codex(path, n):
+    msgs = []
+    for line in tail_bytes(path, 600 * 1024).splitlines():
+        o = jl(line)
+        if not o or o.get("type") != "response_item":
+            continue
+        p = o.get("payload") or {}
+        if p.get("type") != "message":
+            continue
+        txt = text_of(p.get("content"))
+        if not txt or (p.get("role") == "user" and txt.startswith("<")):
+            continue
+        msgs.append((p.get("role"), o.get("timestamp", ""), txt))
+    return msgs[-n:]
+
+
+# ---------- Command Code ----------
+def scan_cmd(since_epoch, live_names, opened):
+    rows = []
+    for path in glob.glob(CMD_GLOB):
+        if ".checkpoints." in path:
+            continue
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            continue
+        if mtime < since_epoch or time.time() - mtime < LIVE_GRACE:
+            continue
+        o = jl((head_lines(path, 1) or [""])[0])
+        if not o or o.get("type") != "session":
+            continue
+        sid = o.get("id") or ""
+        if sid in opened:
+            continue
+        cwd = o.get("cwd") or ""
+        name = ""
+        try:
+            with open(path[:-6] + ".meta.json", "r", encoding="utf-8") as f:
+                name = (json.load(f).get("title") or "")
+        except Exception:
+            pass
+        name = name or ("cmd-" + sid[:8])
+        if name in live_names:
+            continue
+        last_ts = 0
+        for m in TS_RE.finditer(tail_bytes(path, 64 * 1024)):
+            last_ts = max(last_ts, parse_ts(m.group(1)))
+        rows.append(dict(src="CMD", agent="cmd", name=safe_name(name), cwd=cwd, sid=sid, model="",
+                         last_msg=last_ts, last_alive=int(mtime), resume=""))
+    return rows
+
+
+def tail_pi(path, n):
+    msgs = []
+    for line in tail_bytes(path, 2_000_000).splitlines():
+        o = jl(line)
+        if not o or o.get("type") != "message":
+            continue
+        m = o.get("message") or {}
+        role = m.get("role")
+        if role not in ("user", "assistant"):
+            continue
+        text = text_of(m.get("content"))
+        if not text or (role == "user" and is_noise_user(text)):
+            continue
+        msgs.append((role, o.get("timestamp") or m.get("timestamp") or "", text))
+    return msgs[-n:]
+
+
+def tail_cmd(path, n):
+    msgs = []
+    for line in tail_bytes(path, 600 * 1024).splitlines():
+        o = jl(line)
+        if not o or o.get("type") != "message":
+            continue
+        m = o.get("message") or {}
+        txt = text_of(m.get("content"))
+        if txt:
+            msgs.append((m.get("role"), o.get("timestamp", ""), txt))
+    return msgs[-n:]
+
+
+# ---------- opencode ----------
+def scan_opencode(since_epoch, live_names):
+    if not os.path.isfile(OPENCODE_DB):
+        return []
+    try:
+        con = sqlite3.connect("file:" + OPENCODE_DB + "?mode=ro&immutable=1", uri=True, timeout=3)
+        rows_db = con.execute(
+            "select id, directory, title, time_updated from session where time_updated >= ? order by time_updated desc",
+            (int(since_epoch) * 1000,)).fetchall()
+        con.close()
+    except Exception:
+        return []
+    out = []
+    for sid, cwd, title, upd in rows_db:
+        name = "oc-" + sid[-8:]
+        if name in live_names:
+            continue
+        ts = int(upd // 1000)
+        out.append(dict(src="OC", agent="opencode", name=name, cwd=cwd or "", sid=sid, model="",
+                        last_msg=ts, last_alive=ts, resume="", title=title or ""))
+    return out
+
+
+# ---------- 계보 ----------
+def gen_filter(rows, all_gen):
+    latest = {}
+    for r in rows:
+        m = CHAIN_RE.match(r["name"])
+        r["base"], r["gen"] = (m.group(1), int(m.group(2))) if m else (r["name"], -1)
+        if m:
+            k = (r["agent"], r["base"])
+            latest[k] = max(latest.get(k, -1), r["gen"])
+    out = {}
+    for r in rows:
+        if not all_gen and r["gen"] >= 0 and r["gen"] < latest.get((r["agent"], r["base"]), -1):
+            continue
+        k = (r["agent"], r["name"])
+        if k not in out or r["last_alive"] > out[k]["last_alive"]:
+            out[k] = r
+    return sorted(out.values(), key=lambda r: r["last_alive"], reverse=True)
+
+
+# ---------- 파일 찾기 (tail 용) ----------
+def find_transcript(sid):
+    for pat in (CLAUDE_GLOB, CODEX_GLOB, CMD_GLOB, PI_GLOB):
+        for p in glob.glob(pat):
+            if "/subagents/" in p:
+                continue
+            if sid in os.path.basename(p):
+                if "/.claude/" in p:
+                    return "claude", p
+                if "/.codex/" in p:
+                    return "codex", p
+                if "/.pi/" in p:
+                    return "pi", p
+                return "cmd", p
+    return None, None
+
+
+# ---------- resolve: 세션 → 대화 기록 인덱스 경로 (라이브 + 종료 공통) ----------
+# 「리스트에 보이는 세션의 트랜스크립트 파일」을 이름/엔진/트랜스크립트에서 해석한다.
+# 읽기 전용. 종료 세션은 sid 로, 라이브 세션은 (cwd, 이름) 으로 찾는다.
+def claude_project_dirs(cwd):
+    # claude project 디렉터리 슬러그 = cwd 의 '/'와 '.'를 '-'로 (실측: .worktrees → --worktrees).
+    # tmux pane_current_path 는 심링크를 해석(/private/var/…)하므로 cwd 와 realpath 후보를 모두 시도한다.
+    root = os.path.dirname(os.path.dirname(CLAUDE_GLOB))
+    cands = set()
+    c = cwd or ""
+    if c:
+        cands.add(c)
+        try:
+            cands.add(os.path.realpath(c))
+        except Exception:
+            pass
+        cands.add(c[len("/private"):] if c.startswith("/private/") else "/private" + c)
+    return [os.path.join(root, re.sub(r"[/.]", "-", x)) for x in cands if x]
+
+
+def _cwd_eq(a, b):
+    if not a or not b:
+        return True
+    if a == b:
+        return True
+    try:
+        return os.path.realpath(a) == os.path.realpath(b)
+    except Exception:
+        return False
+
+
+def _head_agent_name(path):
+    for line in head_lines(path, 120):
+        o = jl(line)
+        if o and o.get("agentName"):
+            return o["agentName"]
+        if o and o.get("type") == "user":
+            break
+    return ""
+
+
+def _sid_of(path):
+    return os.path.basename(path)[:-6] if path.endswith(".jsonl") else os.path.basename(path)
+
+
+def _find_sid(sid, agent):
+    a, p = find_transcript(sid)
+    return (agent, sid, p, "exact") if p and a == agent else None
+
+
+def resolve_claude(name, cwd, sid=""):
+    if sid:
+        return _find_sid(sid, "claude")
+    d = claude_project_dirs(cwd)
+    best = None
+    seen = set()
+    for dd in d:
+        for p in glob.glob(os.path.join(dd, "*.jsonl")):
+            if "/subagents/" in p or p in seen:
+                continue
+            seen.add(p)
+            if name and _head_agent_name(p) == name:
+                return ("claude", _sid_of(p), p, "exact")
+            try:
+                mt = os.path.getmtime(p)
+            except OSError:
+                continue
+            if best is None or mt > best[0]:
+                best = (mt, p)
+    # 이름 매치 실패 시 폴백은 «지금 쓰이고 있는 파일»만 — 방치된 남의 세션을 집어오지 않게.
+    if best and time.time() - best[0] < LIVE_GRACE:
+        return ("claude", _sid_of(best[1]), best[1], "fallback")
+    return None
+
+
+def _codex_meta(path):
+    meta, users = None, []
+    for line in head_lines(path, 40):
+        o = jl(line)
+        if not o:
+            continue
+        if meta is None and o.get("type") == "session_meta":
+            meta = o.get("payload") or {}
+        p = o.get("payload") or {}
+        if o.get("type") == "response_item" and p.get("type") == "message" and p.get("role") == "user":
+            t = text_of(p.get("content"))
+            if not is_noise_user(t):
+                users.append(t)
+    return meta, users
+
+
+def resolve_codex(name, cwd, sid=""):
+    if sid:
+        return _find_sid(sid, "codex")
+    best = None
+    cutoff = time.time() - RESOLVE_WINDOW
+    for p in glob.glob(CODEX_GLOB):
+        try:
+            if os.path.getmtime(p) < cutoff:
+                continue
+        except OSError:
+            continue
+        meta, users = _codex_meta(p)
+        if not meta or not _cwd_eq(meta.get("cwd") or "", cwd):
+            continue
+        s = meta.get("session_id") or meta.get("id") or _sid_of(p)
+        if name and infer_name(users) == name:
+            return ("codex", s, p, "exact")
+        try:
+            mt = os.path.getmtime(p)
+        except OSError:
+            continue
+        if best is None or mt > best[0]:
+            best = (mt, s, p)
+    return ("codex", best[1], best[2], "cwd") if best else None
+
+
+def _cmd_meta(path):
+    o = jl((head_lines(path, 1) or [""])[0])
+    if not o or o.get("type") != "session":
+        return None, ""
+    title = ""
+    try:
+        with open(path[:-6] + ".meta.json", "r", encoding="utf-8") as f:
+            title = json.load(f).get("title") or ""
+    except Exception:
+        pass
+    return o, title
+
+
+def resolve_cmd(name, cwd, sid=""):
+    if sid:
+        return _find_sid(sid, "cmd")
+    best = None
+    cutoff = time.time() - RESOLVE_WINDOW
+    for p in glob.glob(CMD_GLOB):
+        if ".checkpoints." in p:
+            continue
+        try:
+            if os.path.getmtime(p) < cutoff:
+                continue
+        except OSError:
+            continue
+        o, title = _cmd_meta(p)
+        if not o or not _cwd_eq(o.get("cwd") or "", cwd):
+            continue
+        s = o.get("id") or _sid_of(p)
+        if name and title == name:
+            return ("cmd", s, p, "exact")
+        try:
+            mt = os.path.getmtime(p)
+        except OSError:
+            continue
+        if best is None or mt > best[0]:
+            best = (mt, s, p)
+    return ("cmd", best[1], best[2], "cwd") if best else None
+
+
+def resolve_opencode(name, cwd, sid=""):
+    if not os.path.isfile(OPENCODE_DB):
+        return None
+    try:
+        con = sqlite3.connect("file:" + OPENCODE_DB + "?mode=ro&immutable=1", uri=True, timeout=3)
+        if sid:
+            rows = con.execute("select id, title from session where id=?", (sid,)).fetchall()
+        elif name:
+            rows = con.execute("select id, title from session where title=? order by time_updated desc",
+                               (name,)).fetchall()
+            if not rows and cwd:
+                rows = con.execute("select id, title from session where directory=? order by time_updated desc",
+                                   (cwd,)).fetchall()
+        elif cwd:
+            rows = con.execute("select id, title from session where directory=? order by time_updated desc",
+                               (cwd,)).fetchall()
+        else:
+            rows = []
+        con.close()
+    except Exception:
+        return None
+    if not rows:
+        return None
+    match = "exact" if (name and (rows[0][1] or "") == name) else "cwd"
+    return ("opencode", rows[0][0], OPENCODE_DB, match)
+
+
+def resolve_pi(name, cwd, sid=""):
+    # pi는 tmuxc가 sid를 발급하고 live idx는 tmuxc probe를 쓴다. 여기서는 sid exact만 담당.
+    if sid:
+        return _find_sid(sid, "pi")
+    return None
+
+
+RESOLVE_WINDOW = int(os.environ.get("TMM_RESOLVE_WINDOW", "172800"))  # 48h — 이름/ cwd 해석은 최근 파일만
+RESOLVERS = {"claude": resolve_claude, "codex": resolve_codex, "cmd": resolve_cmd,
+             "opencode": resolve_opencode, "pi": resolve_pi}
+
+
+def cmd_resolve(a):
+    agents = [a.agent] if a.agent else ["claude", "codex", "cmd", "opencode", "pi"]
+    name, cwd = a.name or "", a.cwd or ""
+    # 1패스: 이름 정확매치 — 같은 cwd 에 claude·codex 가 섞여 있어도 남의 것을 집지 않는다.
+    for ag in agents:
+        fn = RESOLVERS.get(ag)
+        if not fn:
+            continue
+        try:
+            res = fn(name, cwd, a.sid or "") if (name or a.sid) else None
+        except Exception:
+            res = None
+        if res and res[3] == "exact":
+            print(SEP.join([res[0], res[1], res[2] or "", cwd, res[3]]))
+            return 0
+    # 2패스: cwd 기반 폴백 (라이브 신규 세션 — 이름 매치가 없을 때)
+    for ag in agents:
+        fn = RESOLVERS.get(ag)
+        if not fn:
+            continue
+        try:
+            res = fn("", cwd, a.sid or "")
+        except Exception:
+            res = None
+        if res:
+            print(SEP.join([res[0], res[1], res[2] or "", cwd, res[3]]))
+            return 0
+    return 1
+
+
+# ---------- excerpt: fork 컨텍스트용 발췌 (평문, ANSI 없음) ----------
+def cmd_excerpt(a):
+    agent, path = find_transcript(a.sid)
+    if a.agent:
+        agent = a.agent
+    if not path:
+        print("(트랜스크립트 없음: %s)" % a.sid)
+        return 1
+    out = ["# fork context — %s" % a.sid,
+           "- source agent: %s" % agent,
+           "- transcript: %s" % path]
+    if a.cwd:
+        out.append("- cwd: %s" % a.cwd)
+    out.append("")
+    fn = {"claude": tail_claude, "codex": tail_codex, "cmd": tail_cmd, "pi": tail_pi}.get(agent)
+    if not fn:
+        out.append("(이 엔진은 대화 tail 미지원 — 위 transcript 경로를 직접 참조)")
+    else:
+        msgs = fn(path, a.n)
+        if not msgs:
+            out.append("(대화 없음)")
+        for role, ts, txt in msgs:
+            out.append("## %s · %s" % (role or "?", ts or ""))
+            out.append(txt.strip())
+            out.append("")
+    print("\n".join(out))
+    return 0
+
+
+# ---------- 렌더 ----------
+def render(msgs, width):
+    """Claude TUI 흉내: user=회색 `❯`, assistant=굵게 `⏺`, 끝에 완료 마커. render_pane 이 그대로 먹는다."""
+    out = []
+    last_ts = ""
+    for role, ts, txt in msgs:
+        last_ts = ts or last_ts
+        body = txt.replace("\r", "")
+        if role == "user":
+            out.append("\033[2m❯ " + body.splitlines()[0][:width] + "\033[0m")
+            for l in body.splitlines()[1:6]:
+                out.append("\033[2m  " + l[:width] + "\033[0m")
+        else:
+            lines = body.splitlines() or [""]
+            out.append("\033[1m⏺ " + lines[0] + "\033[0m")
+            out.extend("  " + l for l in lines[1:])
+        out.append("")
+    if last_ts:
+        t = parse_ts(last_ts)
+        hm = time.strftime("%H:%M", time.localtime(t)) if t else "--:--"
+        out.append("\033[32m✻ done " + hm + "\033[0m")
+    return "\n".join(out)
+
+
+# ---------- main ----------
+LIVE_GRACE = int(os.environ.get("TMM_LIVE_GRACE", "90"))
+
+
+def cmd_scan(a):
+    since_epoch = time.time() - a.since * 3600
+    live = set(a.live or [])
+    opened = live_sids()
+    snap = load_snapshot(a.snapshot)
+    rows = scan_claude(since_epoch, live, opened) + scan_codex(since_epoch, live, opened) \
+        + scan_cmd(since_epoch, live, opened) + scan_opencode(since_epoch, live)
+    # Snapshot-only rows: pi is not transcript-scanned yet, but tmuxc save pins its
+    # exact resume argv. Add it so `tmm dead`/`restore` can recover pi seats.
+    seen = {r["sid"] for r in rows}
+    for sid, s in snap.items():
+        if sid in seen:
+            continue
+        name, resume, model, effort, agent, cwd = s
+        agent = agent or infer_agent_from_resume(resume)
+        if not agent:
+            continue
+        nm = safe_name(name or ("%s-%s" % (agent, sid[:8])))
+        m = CHAIN_RE.match(nm)
+        base = m.group(1) if m else nm
+        gen = int(m.group(2)) if m else 0
+        rows.append({
+            "src": "SNAP", "agent": agent, "name": nm, "cwd": cwd, "sid": sid,
+            "model": model or "?", "effort": effort or "", "last_msg": "", "last_alive": 0,
+            "base": base, "gen": gen, "resume": resume,
+        })
+    for r in rows:
+        s = snap.get(r["sid"])
+        if s:
+            r["src"] = "SNAP"
+            r["resume"] = s[1]
+            if s[0]:
+                r["name"] = safe_name(s[0])
+            if s[2]:
+                r["model"] = s[2]
+            if s[3]:
+                r["effort"] = s[3]
+    rows = gen_filter(rows, a.all_gen)
+    for r in rows:
+        print(SEP.join(str(x) for x in (
+            r["src"], r["agent"], r["name"], r["cwd"], r["sid"], r["model"], r.get("effort", ""),
+            r["last_msg"], r["last_alive"], r["base"], r["gen"], r["resume"].replace("\t", " "))))
+
+
+def cmd_tail(a):
+    agent, path = find_transcript(a.sid)
+    if not path or not agent:
+        print("(트랜스크립트 없음: %s)" % a.sid)
+        return 1
+    tailers = {"claude": tail_claude, "codex": tail_codex, "cmd": tail_cmd, "pi": tail_pi}
+    msgs = tailers[agent](path, a.n)
+    if not msgs:
+        print("(대화 없음)")
+        return 0
+    print(render(msgs, a.width))
+    return 0
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    s = sub.add_parser("scan")
+    s.add_argument("--since", type=float, default=12.0, help="시간 (기본 12)")
+    s.add_argument("--all-gen", action="store_true")
+    s.add_argument("--snapshot", default=SNAPSHOT)
+    s.add_argument("--live", nargs="*", help="살아있는 tmux 세션명 (제외)")
+    t = sub.add_parser("tail")
+    t.add_argument("--sid", required=True)
+    t.add_argument("--n", type=int, default=40)
+    t.add_argument("--width", type=int, default=200)
+    r = sub.add_parser("resolve")
+    r.add_argument("--name", default="")
+    r.add_argument("--cwd", default="")
+    r.add_argument("--agent", default="")
+    r.add_argument("--sid", default="")
+    x = sub.add_parser("excerpt")
+    x.add_argument("--sid", required=True)
+    x.add_argument("--agent", default="")
+    x.add_argument("--cwd", default="")
+    x.add_argument("--n", type=int, default=40)
+    a = ap.parse_args()
+    if a.cmd == "scan":
+        return cmd_scan(a)
+    if a.cmd == "tail":
+        return cmd_tail(a)
+    if a.cmd == "resolve":
+        return cmd_resolve(a)
+    return cmd_excerpt(a)
+
+
+if __name__ == "__main__":
+    sys.exit(main() or 0)

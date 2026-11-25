@@ -1,0 +1,102 @@
+{
+  "name": "agent-cli",
+  "version": "2.3.0",
+  "description": "AI 코딩 에이전트 CLI 툴킷 — 설치·인증·비교·Trust + 비대화 실행·자율주행(dangerous/full-auto/yolo/force)·resume 체인·페르소나(DA/designer/architect) 위임. 세션 내에서 claude·codex·gemini·opencode·cursor-agent·pi 를 소환→자율주행→이어가기. macOS·Linux·WSL 지원 + 환경 자동감지(detect-env)로 쓸 수 있는 CLI 안내. oh-my-*(ulw/ultraplan)·baton·tmuxc 상위 하네스 연계. 2026-06 5종 실증 + 2026-10 Pi continuation(--session-id/--session/--fork) 추가(cursor-agent 비대화 작동, codex resume --last, gemini sid-resume). 2026-10-24 cloud session credits 배치(cloud-dataset-batch: repo 없이 학습·라벨링 데이터 대량 생성+회수, task lexicon/parallel/label/qa/doc/free) 추가.",
+  "os": [
+    "macos",
+    "linux",
+    "wsl"
+  ],
+  "dependencies": {
+    "cli": [
+      "perl",
+      "python3"
+    ],
+    "brew": [],
+    "npm": [],
+    "pip": [],
+    "feature_packs": [],
+    "agent_clis_any_of": [
+      "claude",
+      "codex",
+      "gemini",
+      "opencode",
+      "cursor-agent",
+      "agy",
+      "pi"
+    ]
+  },
+  "requires_api_keys": false,
+  "requires_google_auth": false,
+  "has_obsidian": false,
+  "has_cron": false,
+  "install_time_minutes": 3,
+  "commands": [],
+  "skill_surfaces": [
+    {
+      "runtime": "claude-code",
+      "kind": "skill",
+      "path": "SKILL.md"
+    }
+  ],
+  "runtime_targets": [
+    {
+      "runtime": "claude-code",
+      "kind": "skill",
+      "target": "~/.claude/skills/agent-cli/SKILL.md",
+      "status": "installable"
+    },
+    {
+      "runtime": "claude-code",
+      "kind": "support-files",
+      "source": "references/",
+      "target": "~/.claude/skills/agent-cli/references/",
+      "status": "installable"
+    },
+    {
+      "runtime": "claude-code",
+      "kind": "support-files",
+      "source": "scripts/",
+      "target": "~/.claude/skills/agent-cli/scripts/",
+      "status": "installable"
+    },
+    {
+      "runtime": "claude-code",
+      "kind": "support-files",
+      "source": "config/tools-section.md",
+      "target": "TOOLS.md snippet registration",
+      "status": "limited"
+    }
+  ],
+  "hook_adapters": [],
+  "private_state_exclusions": [
+    ".omc",
+    ".omo",
+    ".omx",
+    ".pytest_cache",
+    "__pycache__",
+    ".cache",
+    "cache",
+    "caches",
+    "log",
+    "logs",
+    "session",
+    "sessions",
+    "auth",
+    "token",
+    "tokens",
+    "settings",
+    "settings.json",
+    "hooks.json"
+  ],
+  "public_docs": [
+    "README.md",
+    "INSTALL.md",
+    "cli/install.md",
+    "test/verify.md",
+    "CHANGELOG.md"
+  ],
+  "cli_name": null,
+  "cli_package": null,
+  "cli_install_method": "skill copy (외부 에이전트 CLI는 사용자 기존 설치/인증 사용)"
+}

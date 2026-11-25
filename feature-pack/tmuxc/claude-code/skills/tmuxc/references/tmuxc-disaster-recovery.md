@@ -1,0 +1,199 @@
+# tmuxc 재해 복구 레퍼런스 (UC8 + UC11)
+
+> tmux 세션/서버 장애 복구. SKILL.md 본문에서 분리(on-demand) — 평상시 불필요, 장애 시에만 Read.
+> UC8 = cmux 미러 디스커넥트(서버 살아있음) / UC11 = 서버 프로세스 사망(세션 소실).
+> **먼저 구분**: `tmux list-sessions`가 `attached=0`이면 UC8, `no server running` 에러면 UC11.
+
+---
+
+## UC8: cmux 디스커넥트 복구 (`tmuxc recover`)
+
+cmux(cmuxterm.app) 워크스페이스에서 보던 tmux 세션들이 `[server exited unexpectedly]`로 한꺼번에 끊겼을 때 자동 재연결. **(주의: tmux 서버 자체가 죽은 게 아니라 cmux 미러 연결만 끊긴 경우. 서버 사망은 UC11.)**
+
+**배경 (2026-05-31 실측)**: cmux는 자체 tmux 호환 레이어(`pipe-pane`/`set-hook`/`respawn-pane`)를 가진 멀티플렉서. 그 안에서 `tmux -CC`(control 모드)로 미러링하면 control 스트림이 충돌 → 미러 클라이언트가 동시에 끊김. **tmux 서버·claude는 안 죽고 `attached=0`이 될 뿐.**
+
+**진단 (죽음 vs 단순 디스커넥트 구분)**:
+1. `tmux list-sessions -F "#{session_name} attached=#{session_attached}"` → 전부 `attached=0`이면 연결만 끊긴 것 (서버 살아있음)
+2. claude 생존 확인: `ps -o time= -p <pids>`를 시차 두고 2회 → CPU time 증가 = 살아서 연산 중
+3. pane이 `node` 아닌 값(`2.1.158` 등)으로 보여도 오탐 — `pgrep -P <pane_pid>`로 자식 claude 직접 확인
+4. **`tmux list-sessions` 자체가 "no server running" 에러면 → 서버 사망(UC11 restore)**
+
+**복구 동작**:
+1. cmux 생존 확인: `CMUX=/Applications/cmux.app/Contents/Resources/bin/cmux; "$CMUX" ping` → `PONG`
+2. 대상 워크스페이스 ref 확인: `"$CMUX" list-workspaces`
+3. 각 detached tmux 세션마다:
+   ```bash
+   out=$("$CMUX" new-pane --workspace <ws-ref> --direction down)   # 새 페인
+   surf=$(echo "$out" | grep -oE 'surface:[0-9]+' | head -1)
+   "$CMUX" focus-panel --panel "$surf" --workspace <ws-ref>
+   for try in 1 2 3 4 5 6; do                                      # PTY lazy spawn 대기
+     sleep 1
+     "$CMUX" send-panel --panel "$surf" --workspace <ws-ref> "tmux attach -t <session>" && {
+       "$CMUX" send-key-panel --panel "$surf" --workspace <ws-ref> Enter; break; }
+   done
+   ```
+4. 검증: `tmux list-sessions -F "#{session_name} att=#{session_attached}"` → 전부 `att=1`
+
+**핵심 함정**:
+- `cmux send --surface ...`는 `Surface is not a terminal`로 막힘. 입력은 반드시 **`send-panel --panel`** (panel 레벨). Enter는 `send-key-panel --panel ... Enter`.
+- `new-pane` 직후 PTY는 **lazy spawn** — 즉시 send하면 흘러감. 셸 프롬프트 뜰 때까지 재시도 루프 필수. 명령이 흘렀으면 `send-key-panel C-c`로 정리 후 재주입.
+
+**규칙**: cmux 안에서는 `tmux -CC`(control 모드) **절대 금지**, 일반 `tmux attach`만 사용 (control 모드가 충돌 원인).
+
+---
+
+## UC11: tmux 서버 사망 복원 (`tmuxc restore`)
+
+**tmux 서버 프로세스 자체가 죽어**(대표: PC 재부팅) 모든 세션이 소실된 상황(UC8과 달리 세션이 아예 없음). claude/codex 작업 세션은 디스크에 보존되므로, **세션 로그에서 복구 대상을 자동 식별해 tmux를 재생성하고 resume으로 대화까지 복원**한다.
+
+### 11-0-snap. 스냅샷 복구 (권장 — `tmuxc save` / `restore --from`, v0.3.0)
+
+**평상시(특히 컴퓨터 종료 전)에 `tmuxc save` 한 번**이 복구 품질을 결정한다. 로그 스캔이 구조적으로 못 하는 것을 스냅샷은 한다.
+
+```bash
+tmuxc save                      # 종료 전 — 전역 tmux 세션 상태를 파일로 굳힌다
+tmuxc save --keep 5             # 보관 개수 조정 (기본 20, TMUXC_SNAPSHOT_KEEP)
+tmuxc save --dry-run            # 파일 안 쓰고 JSON만 stdout
+
+tmuxc restore                   # 스냅샷이 있으면 «자동으로» 스냅샷 경로 (나이 표시)
+tmuxc restore --from latest     # 명시
+tmuxc restore --from ~/.tmuxc/snapshots/snapshot-20260825T084759Z.json
+tmuxc restore --scan            # 스냅샷 무시하고 기존 로그 포렌식 강제
+```
+
+**산출물**: `~/.tmuxc/snapshots/snapshot-<UTC>.json` + `latest.json` 심링크. **최근 N개만 롤링 보관**하고 나머지는 저장 시 자동 삭제한다. 쓰기는 `.tmp` → `os.replace` 원자적 — 종료 직전에 부분 기록된 스냅샷을 남기지 않는다.
+
+**로그 스캔 대비 이점** (실측 49세션):
+
+| 축 | 로그 스캔 | 스냅샷 |
+|---|---|---|
+| `[1m]` 창 선택자 | ❌ 전량 유실 (트랜스크립트 미기록) | ✅ argv에서 보존 |
+| effort | ❌ `high`로 일괄 추정 | ✅ argv에서 보존 |
+| opencode / Command Code | ❌ 스캔 대상 아님 | ✅ 지원 |
+| codex 모델 | ❌ `gpt-5.5` 하드코딩 | ✅ `-c model=` 보존 |
+| 비-tmuxc 세션(`#N` 없음) | ❌ `--loose` 필요 | ✅ 전량 포함 |
+| 복구 커맨드 | alias 런타임 추론(실패 가능) | ✅ save 시점 완제품 replay |
+
+**동작**: ① tmux 전 세션 열거(`#S`/`session_path`/`attached`/`pane_current_command`) → ② pane 후손 프로세스 argv에서 agent·model·effort·sid 판별 → ③ argv에 sid가 없으면 세션 로그에서 해석 → ④ 에이전트별 복구 커맨드 합성 → ⑤ JSON 기록.
+
+**sid 해석은 4패스 + 선점**이다. `argv`(정본) → `transcript`(`세션명(me)={name}` 마커) → `name-match`(본문에 이름 등장) → `cwd-latest`(cwd 안 최신). **한 sid가 두 세션에 붙지 않도록 확신도 높은 패스가 먼저 선점한다** — 선점이 없으면 cwd를 공유하는 세션들(같은 워크트리의 CFO_OPSALERT#0 / CFO_SSOT#0)이 같은 트랜스크립트를 물어 **한 대화가 두 세션으로 복원되는** 결함이 난다(2026-08-25 실측으로 잡힘). `sid_source` 열이 어느 패스였는지 남기므로 `cwd-latest`는 사람이 한 번 눈으로 확인한다.
+
+- codex/opencode는 트랜스크립트에 세션명 마커가 없어 **`cwd-latest` 패스에서만** 해석된다(구조적 한계).
+- opencode는 sqlite(`~/.local/share/opencode/opencode.db`)가 정본이다 — `storage/session/*.json`은 레거시로 라이브 세션이 안 남는다(2026-08-25 실측). `mode=ro`로만 연다.
+- `title`(직전 작업 힌트)은 복구 표에서 "이게 무슨 세션인가"를 보여준다. opencode는 db의 `title` 컬럼, 나머지는 트랜스크립트의 첫/마지막 유의미 user 메시지.
+
+---
+
+### 11-0. 자동 복구 — 로그 스캔 폴백 (`tmuxc restore --scan`, v0.2.0)
+
+> 스냅샷이 없을 때의 경로다. `[1m]`·effort·opencode·cmd는 이 경로로 복구되지 않는다(§11-0a-정정).
+
+복원 진행 로그는 `#N · 세션명 · 프로젝트 · 작업`을 함께 찍는다.
+복원 종료 시 **결과 표**로 `#번호 / 세션명 / 결과 / 프로젝트 / 이전 대화 요약`을 한 번에 출력한다.
+codex 익명(`thread_name` 없음) 세션은 user 메시지에서 역할명을 추론한다
+(`세션명(me)=` → `[A→B]` → `mbox.sh recv` → `너는 ROLE`) — UUID만 보이던 UX 개선.
+
+재부팅 후 이 명령 하나로 복구한다:
+```bash
+tmuxc restore                    # 스캔 → 통합 리스트업 → 대화형 선택 → 복구·레디
+tmuxc restore --select all --go  # 비대화형 일괄 복구
+tmuxc restore --select 1,3,5 --go
+tmuxc restore --select claude --go   # claude 세션만 (codex 도 동일)
+tmuxc restore --baton --select 1 --go  # --resume 없이 새 세션 + /baton:resume (경량)
+tmuxc restore --since 48         # 시간창 확대 (기본 24h)
+tmuxc restore --loose            # 세션명 규약(#N) 필터 해제 — ad-hoc claude 세션까지
+```
+
+**판별 엔진** (`core/libexec/tmuxc-restore-scan.py`) — 2026-07-08 실측 확립 로직:
+- **정렬 키 = jsonl 내부 마지막 유효 라인의 `timestamp`** (재부팅 시 mtime이 한 시각으로 뭉개지므로 mtime 불사용). 파일 끝 64KB만 tail-seek → 833개도 수 초.
+- **claude 스캔** (`~/.claude/projects/*/*.jsonl`): `isSidechain` / baton 헤드리스 / 영어 DA 프롬프트 / user 텍스트 0개 세션 제외. 세션명은 user 메시지의 `세션명(me)=X` → `[A→B]`의 B 순으로 추출(부연 절삭). 기본은 `#N` 카운터 있는 tmuxc 규약 세션만(해제=`--loose`). 모델은 assistant `"model"` 최빈값 → `ccf`/`ccs`/`ccd` alias 라우팅(런타임 `zsh -ic type` 해석 — 미해석 시 해당 세션 스킵+에러 표기, 일반 claude 우회 금지).
+- **codex 스캔** (`~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`): 첫 줄 `session_meta`에서 session_id·cwd, 세션명은 `~/.codex/session_index.jsonl`의 `thread_name`(1순위 — 없으면 헤드리스로 간주·제외). resume은 `codex resume {session_id}`(UUID 인자, 0.142.4 확인).
+- **공통 필터**: 같은 base의 증류 체인(`#N`)은 최대 N만 / `lsof`로 로그를 물고 있는 **라이브 프로세스 세션 제외**(살아있는 세션 오탐 방지) / cwd 소실은 `no-cwd`로 표기만 하고 스킵 / 동명 tmux 세션 존재 시 스킵.
+- **레디 확인**: claude는 statusline(`ctx:` / `N% context used` / `bypass permissions` / `Model:`) 또는 claude 프로세스 생존, codex는 pane 자식 프로세스 생존. 기본 대기 60초(`TMUXC_RESTORE_READY_TRIES`). `synth` 상태도 복구 대상(alias 없이 model로 headroom 합성). 복원 후 COMM-GUIDE 재주입.
+- tmux 서버가 살아있으면 UC8(디스커넥트) 오진 경고를 먼저 낸다.
+
+### 11-0a. `no-alias` / `synth` — alias 없는 모델 대응 (2026-07-30 실증)
+
+**증상**: 복구 리스트에서 일부 세션이 `route=?` `상태=no-alias`로 뜨고 `--go` 시 `⏭ 스킵`된다. 실증 사례 — Opus 5 세션 3개(V6_HELM#26 / da-opus#4 / ft-lstsnap-impl#52)가 전부 복구 불가로 떨어졌다.
+
+**원인**: 스캐너의 `MODEL_ALIAS` 매핑(`ccf`/`ccs`/`ccd`)에 해당 모델이 없고 zshrc에도 alias가 없으면, alias 체인 해석에 실패해 기동 명령 자체를 못 만든다. **모델은 세션 로그에서 이미 알고 있는데 alias 부재만으로 포기하던 구조.**
+
+**수정(적용됨)**: alias 미해석 시 **모델로 headroom 기동을 직접 합성**하는 폴백을 넣었다. 상태 표기도 `no-alias`(진짜 불가) / **`synth`(합성 복구 가능)**로 분리했다.
+- `core/bin/tmuxc` `restore_cmd_for()`: alias 실패 → `claude-hr.sh --model "{모델}" --effort ${TMUXC_SYNTH_EFFORT:-high}` 합성.
+- `core/libexec/tmuxc-restore-scan.py`: `status = "synth" if model else "no-alias"`.
+
+### ⚠️ 11-0a-정정 (2026-08-25) — 로그 스캔은 `[1m]`·effort를 복원하지 못한다
+
+**이 문서는 위 항목에서 "모델 문자열은 `[1m]` suffix를 포함한 원본이라 창 크기도 승계된다"고 적고 있었다. 그 문장은 틀렸다.**
+
+실측(2026-08-25): 최근 2일치 `~/.claude/projects/**/*.jsonl` 전량 grep 결과 기록되는 값은 `"model":"claude-opus-5"` 같은 **bare ID뿐이고 `[1m]` 히트는 0건**이다. effort도 트랜스크립트에 없다. 즉 로그 스캔 경로(`synth` 포함)는 구조적으로:
+
+- `[1m]` 창 선택자를 **잃는다** → 1M 세션이 200K로 되살아난다
+- effort를 **잃는다** → `TMUXC_SYNTH_EFFORT` 기본 `high`로 일괄 추정된다
+
+`[1m]`·effort가 살아 있는 유일한 소스는 **라이브 프로세스 argv**다(`tmuxc model {name}`이 읽는 그것). 그래서 살아 있을 때 argv를 파일로 굳히는 **`tmuxc save` 스냅샷**이 도입됐다 — §11-0-snap 참조.
+
+**따라서 복구 우선순위는**: `tmuxc save` 스냅샷 > 로그 스캔(`--scan`). 스냅샷이 없으면 1m/effort는 복구 후 **수동으로 확인**해야 한다(`tmuxc model {name}`으로 대조).
+
+**남는 수동 축 2개** (합성으로 못 메우는 것):
+1. **cwd 오판** — 세션 로그의 cwd가 워크트리가 아닌 리포 루트로 잡히는 경우가 있다(실증: impl#52). 복구 전 `cwd=` 줄을 눈으로 확인하고, 틀리면 `tmux new-session -s '{name}' -c {정확한cwd}` 후 명령을 수동 주입한다.
+2. **역할↔UUID 매핑 확인** — 이름이 안 잡히거나 여러 후보가 겹치면, 세션 파일 내용의 역할 표식으로 교차검증한다(추측 금지):
+   ```bash
+   D=~/.claude/projects/{project-hash}
+   for U in <uuid...>; do echo "=== $U ==="
+     head -c 3000 "$D/$U.jsonl" | grep -aoE '[A-Za-z_][A-Za-z0-9_-]*#[0-9]+' | sort | uniq -c | sort -rn | head -3
+   done
+   # 애매하면 역할 고유 표식 카운트로 확정: DA는 'DA ONE-SHOT', HELM은 '스폰했다', impl은 구현 심볼명
+   ```
+
+### 11-0b. codex 세션은 `--model`을 못 받는다 (2026-07-30 실증)
+
+`tmuxc open --agent codex`는 **`--model` 옵션을 반영하지 않는다** — codex 기본값으로 뜬다. 실증: `gpt-5.6-luna high`로 돌던 tester를 승계할 때 `gpt-5.6-terra medium`으로 열렸다.
+
+- 세션 안에서 `/model`로 전환을 시도해도 **즉시 반영되지 않는 경우가 있다**(같은 날 확인된 클래스). 다음 턴에 바뀌는지 보고, 안 바뀌면 그대로 진행할지 판정한다.
+- **판정 기준**: 수집·보고 임무처럼 판정 정밀도를 요구하지 않는 자리면 모델 차이가 결정적이지 않다. 설계·적대검증 자리면 결정적이므로 다른 경로(claude 계열 spawn 등)를 쓴다.
+- 승계 시에는 원본 모델을 **핸드오프 문서에 남겨** 후계가 자기 모델이 원본과 다르다는 사실을 알게 한다.
+
+### 11-1. 사망 감지
+```bash
+tmux list-sessions 2>&1   # "no server running on ..." 또는 "error connecting" = 서버 사망
+```
+
+> 아래 11-2/11-3은 `tmuxc restore` 미설치 환경이나 수동 개입이 필요할 때의 수동 절차다.
+
+### 11-2. claude 세션 인덱스 조회
+claude는 프로젝트별로 세션을 저장한다:
+```
+~/.claude/projects/{project-path-hash}/sessions-index.json
+```
+**스키마는 `{version, entries:[...], originalPath}` envelope (dict)** — 실측 검증. 각 엔트리: `{ sessionId(UUID), fullPath(JSONL), summary, firstPrompt, messageCount, modified, projectPath, gitBranch, isSidechain }`. (구버전이 bare array일 가능성도 방어.)
+```bash
+# 최근 세션 후보 나열 (프로젝트별) — entries 배열에서 추출
+for idx in ~/.claude/projects/*/sessions-index.json; do
+  python3 - "$idx" <<'PY'
+import json,sys
+d = json.load(open(sys.argv[1]))
+entries = d["entries"] if isinstance(d, dict) else d   # dict envelope / bare array 모두 대응 (#0 RULE: 스키마 불일치 시 KeyError로 시끄럽게 실패)
+for e in entries:
+    print(e.get("sessionId"), e.get("gitBranch"), e.get("projectPath"), "|", (e.get("summary") or "")[:60])
+PY
+done
+```
+또는 claude 종료 시 화면에 뜨는 `Resume this session with: claude --resume {uuid}`의 uuid를 직접 사용.
+
+### 11-3. 복원 (tmux 재생성 + claude --resume 동시)
+각 복원 대상 세션마다:
+```bash
+tmux new-session -d -s {name} -c {projectPath}
+# ccd 해석 결과 + --resume {sessionId} (remote-control은 새 세션명으로)
+tmux send-keys -t {name} -l "{ccd-resolved} --name {name} --resume {sessionId} --remote-control {name}"
+tmux send-keys -t {name} Enter
+```
+- 부팅 후 **통신 가이드 주입** (UC1 step 8과 동일) — resume된 세션도 최신 통신 표준을 재수신.
+- `--resume {sessionId}`가 **직전 대화 전체 컨텍스트**를 복원(증류 10-3보다 완전, 단 무거움).
+- 가벼운 복원이 필요하면 `--resume` 대신 신규 claude + `/baton:resume`(핸드오프만) 사용.
+- `--all`: 인덱스의 활성 프로젝트별 최신 세션을 일괄 재생성.
+
+### 11-4. 재발 방지
+- tmux 서버 사망 원인은 대개 OOM/충돌. 중요 세션은 baton handoff를 주기적으로 저장(`/baton:save`)해 두면 `--resume` 실패 시에도 핸드오프로 복원 가능.
+- 이중 멀티플렉서(cmux 안 tmux + `-CC`)는 서버 충돌 위험을 키움 — UC8 규칙 준수.

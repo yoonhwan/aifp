@@ -1,0 +1,81 @@
+{
+  "name": "auto",
+  "version": "3.0.0",
+  "description": "AutoResearch 자율 실험 루프 — Karpathy 패턴. 에이전트는 코드만 수정, uv run으로 자율 실행, stdout JSON으로 판정. prepare.py(인프라) + run_experiment.py(실험기) + program.md(목표 선언) 3층 구조.",
+  "os": ["macos", "linux"],
+  "dependencies": {
+    "cli": ["git", "python3", "uv"],
+    "brew": [],
+    "npm": [],
+    "pip": [],
+    "feature_packs": []
+  },
+  "requires_api_keys": false,
+  "requires_google_auth": false,
+  "has_obsidian": false,
+  "has_cron": false,
+  "install_time_minutes": 2,
+  "commands": [],
+  "skill_surfaces": [
+    {
+      "runtime": "claude-code",
+      "kind": "skill",
+      "path": "skill/SKILL.md"
+    }
+  ],
+  "runtime_targets": [
+    {
+      "runtime": "claude-code",
+      "kind": "skill",
+      "target": "~/.claude/skills/auto/SKILL.md",
+      "status": "installable"
+    },
+    {
+      "runtime": "claude-code",
+      "kind": "support-files",
+      "source": "skill/references/",
+      "target": "~/.claude/skills/auto/references/",
+      "status": "installable"
+    },
+    {
+      "runtime": "project",
+      "kind": "template-copy",
+      "source": "config/templates/",
+      "target": "autoresearch/",
+      "status": "installable"
+    }
+  ],
+  "hook_adapters": [],
+  "private_state_exclusions": [
+    ".venv",
+    ".omc",
+    ".omo",
+    ".omx",
+    ".pytest_cache",
+    "__pycache__",
+    ".cache",
+    "cache",
+    "caches",
+    "log",
+    "logs",
+    "session",
+    "sessions",
+    "auth",
+    "token",
+    "tokens",
+    "settings",
+    "settings.json",
+    "hooks.json",
+    "results.tsv",
+    "run.log",
+    "upstream"
+  ],
+  "public_docs": [
+    "README.md",
+    "INSTALL.md",
+    "test/verify.md"
+  ],
+  "cli_name": null,
+  "cli_package": null,
+  "cli_install_method": "skill copy + templates"
+}

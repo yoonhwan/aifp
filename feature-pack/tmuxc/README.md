@@ -1,0 +1,182 @@
+# tmuxc — tmux session launcher for Claude, Codex, OMX, Pi
+
+`tmuxc`는 프로젝트 폴더나 git worktree에 Claude Code, Codex CLI, OMX, OpenCode, Command Code, Pi 세션을 빠르게 열고, 세션 간 메시지·상태 확인·verified send/capture를 표준화하는 운영용 CLI입니다.
+
+BIZ식 운영에서는 다음 3개를 한 세트로 둡니다.
+
+| 도구 | 역할 |
+| --- | --- |
+| `baton` | worktree, handoff, archive, memory |
+| `cairn` | milestone/task schedule ledger, session lineage |
+| `tmuxc` | live tmux agent session launcher/control |
+
+## 설치 결과
+
+- CLI: `~/.tmuxc/current/core/bin/tmuxc`
+- PATH 링크: `~/.local/bin/tmuxc`
+- Claude Code skill: `~/.claude/skills/tmuxc`
+
+## 주요 명령
+
+```bash
+tmuxc open <path> --name NAME --agent claude|codex|omx|opencode|cmd|pi --role worker|orchestrator|designer [--pi-skill PATH]...
+tmuxc wt <worktree-path> --name NAME --prompt "NEXT.md 읽고 시작"
+tmuxc list
+tmuxc ask <name> [lines]
+tmuxc send <name> "message"
+tmuxc msg <name> "message"
+tmuxc kill <name>
+tmuxc clean
+tmuxc save [--keep N]                 # 종료 전 전역 세션 스냅샷 ([1m]/effort/session_id 보존)
+tmuxc restore [--from latest] [--go]  # 재부팅 후 복원 (스냅샷 우선, --scan 으로 로그 스캔 강제)
+tmuxc fork <path> --name NEW (--from LIVE_SESSION | --source ID --agent claude|codex|opencode|cmd|pi) [--model ID] [--ctx 1m] [--effort E] [--prompt TEXT]
+                                      # 네이티브 conversation fork — 부모 대화 불변, 자식은 새 세션ID로 분기
+```
+
+### tmuxc open --pi-skill (pi 좌석 스킬 좁히기 · 0.4.13)
+
+pi 좌석을 띄울 때 스킬 다섯 개만 골라 싣는다 — pi 의 자동 발견을 끄고(`--no-skills`) 준 경로만 차례대로 준다.
+
+```bash
+tmuxc open <path> --agent pi --pi-skill ~/.agents/skills/code-intel --pi-skill ~/.agents/skills/tmuxc --dry-run
+# command=pi --name … --tools … --thinking … --no-skills --skill ~/.agents/skills/code-intel --skill ~/.agents/skills/tmuxc
+```
+
+- 경로는 파일(SKILL.md)이거나 SKILL.md 가 든 폴더다. 없으면 만들지 않고 rc≠0 로 거부한다.
+- `--pi-skill` 은 `--agent pi` 에서만 받는다(다른 에이전트면 rc≠0).
+- 옵션을 주지 않으면 pi 명령은 앞 판과 한 글자도 다르지 않다(`--no-skills` 도 붙지 않는다).
+- `tmuxc fork`·`tmuxc restore` 로 다시 뜨는 좌석은 이 옵션을 쓰지 않는다(스킬 19개가 다시 실린다).
+
+### tmuxc fork (네이티브 분기)
+
+부모 세션을 건드리지 않고 새 conversation id로 분기한다 — 모델/effort만 바꿔 이어가거나
+실험 브랜치를 딸 때 쓴다. 4엔진 각각의 네이티브 플래그를 쓴다:
+
+| 엔진 | argv | 비고 |
+|---|---|---|
+| claude | `--resume <ID> --fork-session` | headroom 래퍼 경유, `[1m]`/effort 승계 |
+| codex | `codex fork <ID>` | `-c model=`/`-c model_reasoning_effort=` 통과 |
+| opencode | `--session <ID> --fork` | 모델 = 세션 env `OPENCODE_CONFIG_CONTENT` (아래) |
+| cmd | `--resume <ID> --fork-session` | `--model`/`--effort` |
+| pi | `--fork <ID> --session-id <NEW>` | `--model`/`--thinking` |
+
+- `--from <라이브세션>`: 엔진·모델·conversation id를 라이브 프로세스/트랜스크립트에서 해석. **교차엔진 불가**(같은 엔진만).
+- `--source <ID> --agent <엔진>`: id 직접 지정. 엔진 저장소 실재 여부를 best-effort 확인.
+- `omx`는 네이티브 fork가 없어 대상에서 제외.
+
+### pi 좌석 (2026-10-20)
+
+```bash
+tmuxc open . --name PI_WORKER --agent pi --role worker --model opengateway/deepseek/deepseek-v4.1-flash-ultrafast
+tmuxc open . --name PI_REVIEW --agent pi --role orchestrator --effort high
+```
+
+- tmuxc가 `--session-id <uuid>`를 발급하고 세션 env(`TMUXC_PI_SESSION_ID`, `TMUXC_PI_MODEL`, `TMUXC_PI_THINKING`)에 심는다. process.title이 argv를 숨겨도 `probe`/`model`/`save`/`restore`가 exact session으로 복구된다.
+- `worker`/`implementer` = `read,bash,edit,write,grep,find,ls`; `orchestrator`/`planner`/`analysis` = read-only.
+- `--effort`는 Pi `--thinking`으로 매핑된다.
+- `--like <pi-session>`으로 live pi의 model/thinking을 상속할 수 있다.
+- Pi 자체 스킬은 `~/.agents/skills/pi-ops` 및 `/skill:pi-ops` 참고.
+
+### Pi + code-intel (0.4.9 — Serena 은퇴)
+
+**0.4.9 부터 `--serena` 는 폐기(거부 · rc 2)다.** Serena 는 2026-10-22 하네스 공통 **code-intel** 로 대체됐다(공유 HTTP 서버 9493 종료 · claude/codex MCP 등록 제거).
+
+```bash
+ci doctor                          # 설치·데몬·smoke 1줄 진단
+ci search "<질의>" <path> --max 5   # 의미/키워드 검색(BM25+AST 블록)
+ci sym <sym> --callers --scope .   # 정의·호출자
+ci outline <file>                  # 구조 + 토큰수
+ci refs "<file>#<sym>"             # LSP 정밀 참조(온디맨드)
+```
+
+- **사전 활성화·인덱싱 절차 없음** — `activate_project`·`initial_config` 같은 선행 호출을 하지 않는다. 탐색 전에 아무것도 켜지 않는다.
+- 편집은 에이전트 네이티브 Edit. 심볼 편집 도구는 없다.
+- `tmuxc open --agent pi --serena` 는 이제 **rc 2 로 거부**(세션 열기 0)하고 위 대체를 안내한다 — 좌석이 죽은 서버를 가리키는 일을 막기 위해서다.
+- 이미 만들어진 `<워크트리>/.pi/mcp.json` 의 `serena` 항목은 지운다(좌석 로컬 · `.pi/` 는 `.git/info/exclude` 에).
+- `bash`/셸 코드는 `ci sym` 이 못 잡는다(LSP 한계) → `rg -n` 병행. 한국어 `.md` 가 많은 디렉토리에서 `ci search` 가 markdown 파서 panic 후 `*.md` 를 제외하고 재시도하므로 **문서 검색은 `rg` 를 쓴다**.
+
+### opencode 좌석 모델 (0.4.1 · r476)
+
+opencode 2.0.x TUI 최상위에는 `--model` 이 없다(`opencode run` 전용 → `Unrecognized flag: --model` 기동 실패).
+`open`/`fork --agent opencode --model <ID>` 는 모델을 플래그 대신 **세션 생성 때 env**
+`OPENCODE_CONFIG_CONTENT={"model":"<ID>"}` 로 그 tmux 세션에만 심는다(`--dry-run` 의 `env=` 줄).
+글로벌 `~/.config/opencode/opencode.json`·워크트리 파일은 건드리지 않는다. 모델 미지정이면 env 0(opencode 기본값).
+
+### 비 claude 좌석의 git 비대화 (0.4.4 · r610)
+
+pi 좌석이 `git rebase --continue` 에서 화면 없는 `vi`(git 기본 편집기)를 열어 54분 멈춘 사건(r599) 재발 방지.
+`open`/`fork` 는 **claude 가 아닌 좌석**(pi·codex·opencode·cmd)의 tmux 세션 env 에
+`GIT_EDITOR=true` · `GIT_SEQUENCE_EDITOR=true` · `GIT_TERMINAL_PROMPT=0` 을 심는다(`--dry-run` 의 `env=` 줄).
+claude 좌석은 Claude Code 가 이미 같은 값을 넣으므로 env 줄 변화 0.
+이미 떠 있는 좌석에는 적용되지 않는다 — 새 좌석부터.
+
+### 실경로 claude 좌석의 저장 판정 (0.4.5 · r736)
+
+`tmuxc save` 의 에이전트 판정(`session_agent_probe`)이 후손 argv 의 **basename 만** 비교해,
+claude 가 실경로(`~/.local/share/claude/versions/2.1.308`)로 돌면 이름이 «버전 번호» 라
+미검출 → `agent=shell` 로 스냅샷에 적히고 `restore` 가 그 좌석을 건너뛰었다(BIZ 2597).
+또 뒤 후손(도구 하위 프로세스)이 앞서 찾은 종류를 덮어써 claude 좌석이 `agent=pi` 로 적혔다.
+그리고 model·sid 를 종류와 무관하게 아무 후손에서나 채워, claude 좌석의 pi 하위 프로세스가 준
+`--model deepseek/flash --session X` 가 섞여 restore 가 **엉뚱한 대화**를 `claude --resume X` 로 되살렸다.
+⇒ ① `*/claude/versions/*` 경로 꼴을 claude 로 인정 ② **종류는 처음 찾은 것**(pane 에 가까운 쪽)을 지키고
+③ model·effort·sid 는 **정한 종류와 같은 종류의 후손**에서만 채운다(다른 엔진 값 섞임 0).
+순수 셸 좌석은 종전대로 `shell`(회귀 0).
+시험 = `test/test_agent_probe_claude_path.sh`(ps/pgrep/tmux 스텁 · 실 tmux 서버 0).
+
+### 부팅 주입의 준비 확인·제출 확인 (0.4.6 · r925)
+
+`inject_message` 가 `send-keys -l 글자 → sleep 0.3 → Enter 1번` 이라, 컴퓨터가 바쁘면 claude TUI 가 아직 입력을
+받지 못한 채 글자만 입력줄에 남고 Enter 가 사라졌다 → jsonl `SessionStart` 0 → 승계 도구가 끝없이 기다렸다
+(ops #56→#57 3회 정지). `open`/`fork` 의 «고정 sleep 4» 도 같은 이유로 빗나갔다.
+⇒ 주입을 종류로 나눈다: `shell`(에이전트 기동 명령 — 종전 그대로) · `agent`(Claude TUI — ① 입력 상자가 그려질
+때까지 기다린다(상한 30초 · 넘으면 rc≠0) ② 글자 ③ Enter ④ 입력줄이 그 문장에서 벗어났는지 최대 3초 확인
+⑤ 안 비었으면 Enter «만» 다시(글자 재입력 0) 최대 2회 → 그래도 안 되면 rc≠0 «제출 실패») · `plain`(pi·codex·cmd
+TUI — 종전 그대로) · `auto`(세션 에이전트를 재서 고른다). 시험 = `test/test_tmuxc_inject_ready_submit.sh`(가짜 tmux).
+
+## 권장 패턴
+
+```bash
+# 1) baton handoff가 있는 worktree에서 세션을 연다.
+tmuxc open /path/to/project/.worktrees/my-task   --name MY_TASK_ORCH   --agent codex   --role orchestrator   --prompt "AGENTS.md, .baton/handoff/CURRENT.md, .baton/handoff/NEXT.md 읽고 시작"
+
+# 2) cairn task/session ref를 남긴다. 필요 시 프로젝트에서 실행.
+cairn link t7 --session-ref MY_TASK_ORCH --execution-ref "tmuxc:MY_TASK_ORCH"
+
+# 3) 진행 중 상태는 tmuxc ask/list로 확인한다.
+tmuxc list
+tmuxc ask MY_TASK_ORCH 80
+```
+
+## 설치
+
+에이전트에게 다음을 요청하세요.
+
+```text
+feature-pack/tmuxc/INSTALL.md 읽고 설치해줘
+```
+
+또는 수동으로 실행합니다.
+
+```bash
+bash feature-pack/tmuxc/install.sh
+tmuxc --help
+```
+
+Codex 기반 설치 검증:
+
+```bash
+tmuxc open "$PWD" --name TMUXC_SMOKE --agent codex --role worker --dry-run
+```
+
+Claude Code 연결 확인:
+
+```bash
+test -e "$HOME/.claude/skills/tmuxc/SKILL.md"
+test -e "$HOME/.claude/skills/tmuxc/COMM-GUIDE.md"
+```
+
+## 제거
+
+```bash
+bash feature-pack/tmuxc/uninstall.sh
+```

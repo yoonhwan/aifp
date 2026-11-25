@@ -1,0 +1,647 @@
+#!/usr/bin/env python3
+"""ctx-window — where did the conversation window go? (read-only)
+
+Reads local pi session logs and reports the four places a seat wastes its
+conversation window:
+
+  W1  bell turns      — share of weighted cost spent on turns that only took a ring
+                        (W1a = every ring turn, W1b = ring turns whose every tool call
+                        was one pure `mbox.sh recv` line)
+  W2  boot turns      — window used to boot (from turn 1 to the turn the boot report
+                        call landed), plus the tool calls spent there
+  W3  past the gate   — tokens still spent after the window first crossed --recv-gate
+  W4  tool results    — result count, bytes, results over --result-cap, the
+                        cut notices (W4c) and how often the full text was re-read
+
+Safety — two separate promises:
+  (1) body keys are never queried: only timestamp · type · role · message.usage
+      counters · message.content[].type · toolCall name/id/arguments.command (head
+      400) · session_info.name (head 64KB probe). Model text, thinking and tool
+      result text are never parsed for meaning.
+  (2) nothing is exported but numbers, timestamps, fixed words from this file,
+      seat names and session file paths. No command line, no result text, no
+      conversation text — not even the first word.
+
+The four numbers mirror the harness originals (analyze2.py · cap.py) so a value
+measured here can be compared with the values those cards landed.
+
+Reading: the sample is chosen by the landed ctx-time body — `Budget` · `list_files`
+· `scan_window` · `pick` · `read_lines` (importlib, bytecode writing off). The only
+place a session file is opened is `read_lines(path, reserved)`; every cut is printed.
+"""
+import argparse
+import html
+import importlib.machinery
+import importlib.util
+import json
+import os
+import re
+import sys
+import time
+from datetime import datetime
+
+sys.dont_write_bytecode = True
+
+DEFAULT_OUT = "~/.cache/ctx-burn/window"
+NAME_PROBE = 64 * 1024
+CMD_HEAD = 400          # 명령 줄은 머리 400자만 본다(ctx-time 과 같다)
+BOOT_TAIL = 20          # 부팅 보고가 없는 좌석 = 0부터 20번째 턴이 이미 쌓인 뒤부터 «부팅 뒤»
+
+BOOT_MARK = "[부팅 보고]"
+BELL_MARK = "[발주 #"
+REREAD_MARK = "ft-tool-result/"
+
+# W4c — pi 절단 통지 꼴. 줄 머리부터 맞음 · `· <숫자>줄` 은 있어도 없어도 된다(새 꼴·옛 꼴).
+NOTICE_PREFIX = "[결과 상한]".encode("utf-8")
+NOTICE_RX = re.compile(
+    (r"\[결과 상한\] 전문 ([0-9]+)바이트(?: · [0-9]+줄)? 중 머리 ([0-9]+) · 꼬리 ([0-9]+) 만 실음 · 전문 = ").encode("utf-8")
+)                                                                  # 바이트 판으로 견준다(다시 인코딩 0)
+
+
+def load_time_body():
+    """같은 폴더의 ctx-time 을 모듈로 싣는다(확장자가 없어 그냥 import 가 안 된다)."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    loader = importlib.machinery.SourceFileLoader("ctx_window_time", os.path.join(here, "ctx-time"))
+    spec = importlib.util.spec_from_loader("ctx_window_time", loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+TIME = load_time_body()          # E8 — 표본 고르기·읽기는 이 본체의 함수를 그대로 부른다
+
+# ---------------------------------------------------------------- pure recv (W1c)
+# 낱말 = 작은따옴표 글 · `$`·백틱이 없는 큰따옴표 글 · 허용 글자만으로 된 토막
+WORD = r"""(?:'[^']*'|"[^"$`\\]*"|[A-Za-z0-9_@%+=:,./#~-]+)"""
+RECV_RX = re.compile(
+    r"^(?:cd +" + WORD + r" +&& +)?"                      # 맨 앞 cd 1번만 && 를 받는다
+    r"(?:[A-Za-z_][A-Za-z0-9_]*=" + WORD + r" +)*"        # 이름=낱말 여러 개
+    r"(?:bash +)?"                                        # bash 는 있어도 없어도 된다
+    r"[A-Za-z0-9_@%+=:,./#~-]*mbox\.sh +recv"             # <경로>mbox.sh recv
+    r"(?: +" + WORD + r"){0,3}"                           # 좌석 이름 · 인자 0 ~ 3개
+    r"(?: +2>&1)?"                                        # stderr 합치기
+    r"(?: +\| +(?:tail|head)(?: +-n +[0-9]+| +-[0-9]+))?"  # 출력 줄이기 1개(tail/head)
+    r"\Z"
+)
+
+
+def pure_recv(name, cmd):
+    """W1c — 명령 줄 «전체» 가 한 꼴과 끝까지 맞을 때만 참(부분 일치 0)."""
+    if (name or "").lower() != "bash":
+        return False
+    if len(cmd) > CMD_HEAD:      # 400자에서 잘린 명령은 끝까지 맞음을 확인할 수 없다
+        return False
+    return RECV_RX.match(cmd) is not None
+
+
+# ---------------------------------------------------------------- cells
+# ---------------------------------------------------------------- cells
+def res_text(c):
+    """도구 결과 글 — 크기를 재려고 이어 붙이기만 한다(analyze2.text_of 와 같은 꼴).
+
+    이 함수의 값은 바이트 수와 W4c 절단 통지 판별로만 쓰이고 어디에도 실리지 않는다.
+    """
+    if isinstance(c, str):
+        return c
+    out = []
+    for x in c or []:
+        t = x.get("type") if isinstance(x, dict) else None
+        if t == "text":
+            out.append(x.get("text", ""))
+        elif t == "thinking":
+            out.append(x.get("thinking", ""))
+        elif t == "toolCall":
+            out.append(json.dumps(x.get("arguments", {}), ensure_ascii=False))
+    return "\n".join(out)
+
+
+def ctx_of(u):
+    """대화창 크기 = 입력 + 캐시 읽기 + 캐시 쓰기 (analyze2 와 같다)."""
+    return int(u.get("input") or 0) + int(u.get("cacheRead") or 0) + int(u.get("cacheWrite") or 0)
+
+
+def cost_of(u):
+    """가중 비용 = 읽기 0.1 · 쓰기 1.25 · 입력 1.0 (analyze2 와 같다)."""
+    return 0.1 * int(u.get("cacheRead") or 0) + 1.25 * int(u.get("cacheWrite") or 0) + int(u.get("input") or 0)
+
+
+def k(n):
+    if n is None:
+        return "-"
+    return ("%dk" % round(n / 1000.0)) if n >= 1000 else str(int(n))
+
+
+def by(n):
+    return "%sB" % format(int(n), ",")
+
+
+def pct(x):
+    return "%5.1f%%" % (100.0 * x)
+
+
+def med(vals):
+    if not vals:
+        return 0
+    v = sorted(vals)
+    return v[len(v) // 2]
+
+
+# ---------------------------------------------------------------- reading one session
+def parse_window_lines(lines, w_from, w_to):
+    """세션 몸 → 턴(숫자와 호출 꼴만) · 도구 결과(바이트 수와 W4c 판별) · 표식 유무.
+
+    창 자르기는 ctx-time 의 parse 와 같은 규칙이다: timestamp 가 없거나
+    `t < w_from` 이거나 `t >= w_to` 인 줄은 세지 않는다(양끝 = from 포함 · to 제외).
+
+    원본 analyze2 와 같은 차례를 지킨다: 턴을 쌓을 때의 «부팅 뒤» 상태는 그 턴의
+    도구 호출을 보기 «전» 값이다. 그래서 `[부팅 보고]` 를 부른 턴은 아직 부팅 안이며,
+    부팅 끝 = 처음 부팅 뒤가 된 턴(0부터 세어 20 이면 21번째 턴).
+    """
+    turns, results = [], []
+    marks = {"bell": False, "boot": False, "cap": False, "reread": False}
+    bell, booted = False, False
+    for line in lines:
+        try:
+            d = json.loads(line)
+        except Exception:
+            continue
+        t = TIME.ts(d.get("timestamp"))
+        if t is None or t < w_from or t >= w_to:      # 창 밖·시각 없는 줄은 세지 않는다
+            continue
+        typ = d.get("type")
+        if typ == "custom_message":
+            bell = True                       # 알림이 실린 글 — 원본의 «초인종» 과 같다
+            continue
+        m = d.get("message") or {}
+        role = m.get("role")
+        if role == "user":
+            head = ""
+            for c in m.get("content") or []:
+                if isinstance(c, str):
+                    head += c
+                elif isinstance(c, dict) and c.get("type") == "text":
+                    head += c.get("text") or ""
+            if BELL_MARK in head[:40]:
+                bell = True
+                marks["bell"] = True
+            continue
+        if role == "assistant":
+            u = m.get("usage") or {}
+            ctx = ctx_of(u)
+            if not ctx:                        # usage 0 = API 오류 레코드 — 턴이 아니다
+                continue
+            if not booted and len(turns) >= BOOT_TAIL:
+                booted = True
+            was_booted = booted
+            calls, reread = [], 0
+            for c in m.get("content") or []:
+                if not (isinstance(c, dict) and c.get("type") == "toolCall"):
+                    continue
+                a = c.get("arguments") or {}
+                cmd = str(a.get("command") or "")
+                calls.append((c.get("name"), cmd))
+                if BOOT_MARK in cmd[:CMD_HEAD]:
+                    booted = True
+                    marks["boot"] = True
+                if REREAD_MARK in json.dumps(a, ensure_ascii=False):
+                    reread += 1
+                    marks["reread"] = True
+            turns.append({"ts": t, "ctx": ctx, "u": u, "calls": calls,
+                          "bell": bell, "booted": was_booted, "reread": reread})
+            bell = False
+            continue
+        if role == "toolResult":
+            raw = res_text(m.get("content")).encode("utf-8")    # 한 벌만 인코딩한다
+            results.append({"ts": t, "bytes": len(raw),
+                            "cap": cut_notice(raw)})
+            continue
+    return turns, results, marks
+
+
+def cut_notice(raw):
+    """W4c — 한 결과 글(바이트)이 «잘린 결과» 인가. 셋 다 참일 때만이다.
+
+      ① 줄 전체가 통지 꼴이고 줄 머리부터 맞음(`· <숫자>줄` 은 있어도 없어도 된다)
+      ② 그 줄 앞 글의 utf-8 바이트 수(바로 앞 줄바꿈 1개 뺴고) = 통지의 머리 A
+      ③ 그 줄 뒤 글의 utf-8 바이트 수(바로 뒤 줄바꿈 1개 뺴고) = 통지의 꼬리 B
+    이미 읽은 한 벌 바이트로 판별하고(다시 인코딩 0), 내보내는 것은 예·아니오뿐이다.
+    바이트까지 같은 통지 모양을 원문이 인용하면 구분하지 못한다 — 형식 지표다.
+    """
+    if NOTICE_PREFIX not in raw:          # 통지 글자부터 없으면 바로 끝
+        return False
+    lines = raw.split(b"\n")
+    off = 0
+    for i, ln in enumerate(lines):
+        if NOTICE_PREFIX in ln:
+            m = NOTICE_RX.match(ln)
+            if m:
+                head_a, tail_b = int(m.group(2)), int(m.group(3))
+                before = off - 1 if i else 0                       # 바로 앞 줄바꿈 1개는 뺸다
+                after = len(raw) - (off + len(ln) + 1) if i + 1 < len(lines) else 0
+                if before == head_a and after == tail_b:
+                    return True
+        off += len(ln) + 1
+    return False
+
+
+def turn_stats(turns, gate):
+    """W1 · W2 · W3 — 한 좌석(또는 한 세션)의 턴 목록에서."""
+    if not turns:
+        return None
+    booted = [t for t in turns if t["booted"]]
+    bell = [t for t in booted if t["bell"]]
+    w1b = [t for t in bell if t["calls"] and all(pure_recv(nm, cmd) for nm, cmd in t["calls"])]
+    denom = sum(cost_of(t["u"]) for t in booted)
+    num = sum(cost_of(t["u"]) for t in bell)
+    be = next((i for i, t in enumerate(turns) if t["booted"]), None)
+    base = be if be is not None else 0
+    cross = next((i for i, t in enumerate(turns) if t["ctx"] >= gate), None)
+    # 원본 analyze2 의 tail_tok 과 같은 셈 — 넘긴 턴이 없거나 첫 턴이면 값이 없다
+    overflow = (turns[-1]["ctx"] - turns[cross - 1]["ctx"]) if cross else None
+    return {"turns": len(turns), "booted_turns": len(booted), "bell_turns": len(bell),
+            "pure_recv_turns": len(w1b), "bell_cost": num, "booted_cost": denom,
+            "share": (num / denom) if denom else 0.0,
+            "boot_end_turn": be, "first_ctx": turns[0]["ctx"],
+            "boot_end_ctx": turns[base]["ctx"], "boot_calls": sum(len(t["calls"]) for t in turns[:base + 1]),
+            "cross_turn": cross, "overflow": overflow, "final_ctx": turns[-1]["ctx"],
+            "reread": sum(t["reread"] for t in turns)}
+
+
+def result_stats(results, cap):
+    over = [r for r in results if r["bytes"] > cap]
+    return {"results": len(results), "bytes": sum(r["bytes"] for r in results),
+            "over": len(over), "over_bytes": sum(r["bytes"] - cap for r in over),
+            "cap_marks": sum(1 for r in results if r["cap"])}
+
+# ---------------------------------------------------------------- totals
+def totals(sessions):
+    """네 숫자 — W1 · W2 는 표식이 있는 세션만, W3 는 잘리지 않은 세션만."""
+    use = [s for s in sessions if s["marked"]]
+    den = sum(s["booted_cost"] for s in use)
+    num = sum(s["bell_cost"] for s in use)
+    w1 = {"share": (num / den) if den else 0.0,
+          "bell_turns": sum(s["bell_turns"] for s in use),
+          "booted_turns": sum(s["booted_turns"] for s in use),
+          "pure_recv_turns": sum(s["pure_recv_turns"] for s in use),
+          "bell_cost": num, "booted_cost": den, "sessions": len(use)}
+    w2v = [s["boot_end_ctx"] - s["first_ctx"] for s in use]
+    w2 = {"sessions": len(w2v), "median": med(w2v), "max": max(w2v) if w2v else 0,
+          "calls_median": med([s["boot_calls"] for s in use]),
+          "calls_max": max([s["boot_calls"] for s in use] or [0])}
+    live = [s for s in sessions if not s["truncated"]]
+    cross = [s for s in live if s["overflow"] is not None]
+    w3 = {"crossed": len(cross), "of": len(live), "median": med([s["overflow"] for s in cross]),
+          "max": max([s["overflow"] for s in cross] or [0]),
+          "top3": [{"seat": s["seat"], "final_ctx": s["final_ctx"]}
+                   for s in sorted(live, key=lambda z: -z["final_ctx"])[:3]]}
+    w4 = {"results": sum(s["w4"]["results"] for s in sessions),
+          "bytes": sum(s["w4"]["bytes"] for s in sessions),
+          "over": sum(s["w4"]["over"] for s in sessions),
+          "over_bytes": sum(s["w4"]["over_bytes"] for s in sessions),
+          "cap_marks": sum(s["w4"]["cap_marks"] for s in sessions),
+          "reread": sum(s["w4"]["reread"] for s in sessions)}
+    return {"w1": w1, "w2": w2, "w3": w3, "w4": w4,
+            "marked_sessions": len(use), "unmarked_sessions": len(sessions) - len(use)}
+
+
+def by_seat(sessions):
+    out = {}
+    for s in sessions:
+        if not s["marked"]:
+            continue
+        g = out.setdefault(s["seat"], {"seat": s["seat"], "role": s["role"], "sessions": 0, "w2": []})
+        g["sessions"] += 1
+        g["w2"].append(s["boot_end_ctx"] - s["first_ctx"])
+    for g in out.values():
+        g["w2_median"], g["w2_max"] = med(g["w2"]), max(g["w2"] or [0])
+        g.pop("w2")
+    return [g for g in out.values()]
+
+
+def restrict(sessions, lo, hi, gate, cap):
+    """--split — 턴을 시각으로 잘라 같은 셈을 다시 한다."""
+    out = []
+    for s in sessions:
+        turns = [t for t in s["turns_raw"] if lo <= (t["ts"] or 0) < hi]
+        st = turn_stats(turns, gate)
+        if st is None:
+            continue
+        st["w4"] = result_stats([r for r in s["results_raw"] if lo <= (r["ts"] or 0) < hi], cap)
+        st["w4"]["reread"] = st["reread"]
+        st.update({"seat": s["seat"], "role": s["role"], "file": s["file"],
+                   "truncated": s["truncated"], "marked": s["marked"]})
+        out.append(st)
+    return out
+
+
+# ---------------------------------------------------------------- words
+STR = {
+    "en": {
+        "head": "ctx-window — last %s · sessions %d · read %s · %s",
+        "w1": "W1 bell-turn share: %(share)s (%(bell)d bell turns of %(boot)d after boot · %(pure)d recv-only)",
+        "w2": "W2 window spent booting: median %s · max %s · calls median %d (%d seats)",
+        "w3": "W3 past %s: %d sessions crossed · median %s · max %s · biggest end windows %s",
+        "w3_none": "W3 past %s: no session crossed",
+        "w4": "W4 tool results: %d · %s · over %s: %d (excess %s) · %d cut notices · %d re-reads (%s)",
+        "no_marks": "no marker: %d sessions (left out of W1 · W2)",
+        "trunc": "read cut: %d sessions stopped at the reserved size (left out of W3)",
+        "trim_scan": "scan cut: %d files not looked at (limit %d files)",
+        "trim_name": "name lookup cut: %d candidates unnamed (read budget %s, name share %s)",
+        "trim_sample": "sample cut: %d sessions left out (limit %d sessions)",
+        "trim_mb": "sample cut: %d sessions left out (read budget %s)",
+        "no_session": "no session in window — try a larger --hours",
+        "omitted": "skipped: codex · claude · hermes (pi sessions only)",
+        "html": "html: %s",
+        "split_out": "cannot compare: split is outside the window",
+        "split_head": "%s → %s",
+        "split_row": "  %-26s %14s → %14s",
+        "col_before": "before", "col_after": "after",
+        "boot_mark": "boot end", "seats": "seat",
+    },
+    "ko": {
+        "head": "ctx-window — 최근 %s · 세션 %d개 · 읽기 %s · %s",
+        "w1": "W1 알림 턴 몫: %(share)s (부팅 뒤 %(boot)d턴 가운데 알림 턴 %(bell)d · recv 만 한 턴 %(pure)d)",
+        "w2": "W2 부팅에 쓴 대화창: 중앙 %s · 최대 %s · 도구 호출 중앙 %d회 (좌석 %d개)",
+        "w3": "W3 문턱 %s 뒤 넘침: 넘은 세션 %d · 중앙 %s · 최대 %s · 끝 대화창 큰 셋 = %s",
+        "w3_none": "W3 문턱 %s 뒤 넘침: 넘은 세션 0",
+        "w4": "W4 도구 결과 크기: %d건 · %s · %s 초과 %d건(초과분 %s) · 절단 통지 %d · 되읽기 %d(%s)",
+        "no_marks": "표식 없음: 세션 %d개(W1 · W2 에서 뺌)",
+        "trunc": "읽기 잘림: 세션 %d개(W3 에서 뺌)",
+        "trim_scan": "훑기 줄임: 파일 %d개는 보지 않음(상한 %d개 · 만든 때가 오래된 것부터 빠짐)",
+        "trim_name": "이름 조회 줄임: 후보 %d개는 이름을 못 봄(읽기 상한 %s 가운데 이름 몫 %s)",
+        "trim_sample": "표본 줄임: 세션 %d개 빠짐(상한 %d개)",
+        "trim_mb": "표본 줄임: 세션 %d개 빠짐(읽기 상한 %s)",
+        "no_session": "창 안에 세션이 없다 — --hours 를 키운다",
+        "omitted": "빠짐: codex · claude · hermes (pi 세션만 잰다)",
+        "html": "html: %s",
+        "split_out": "비교 불가: split 이 창 밖",
+        "split_head": "%s → %s",
+        "split_row": "  %-26s %14s → %14s",
+        "col_before": "앞", "col_after": "뒤",
+        "boot_mark": "부팅 끝", "seats": "좌석",
+    },
+}
+
+
+# ---------------------------------------------------------------- terminal
+def summary(sessions, tot, meta, notes, o, S, L):
+    out = []
+    hours = "%g시간" % meta["hours"] if L == "ko" else "%gh" % meta["hours"]
+    out.append(S["head"] % (hours, len(sessions), TIME.mb(meta["read_bytes"]),
+                            time.strftime("%Y-%m-%d %H:%M")))
+    for n in notes:
+        out.append(n)
+    w1, w2, w3, w4 = tot["w1"], tot["w2"], tot["w3"], tot["w4"]
+    if tot["marked_sessions"]:
+        out.append(S["w1"] % {"share": pct(w1["share"]), "bell": w1["bell_turns"],
+                              "boot": w1["booted_turns"], "pure": w1["pure_recv_turns"]})
+        out.append(S["w2"] % (k(w2["median"]), k(w2["max"]), w2["calls_median"], w2["sessions"]))
+    else:
+        out.append(S["no_marks"] % len(sessions))
+    if w3["crossed"]:
+        top = ", ".join("%s %s" % (x["seat"], k(x["final_ctx"])) for x in w3["top3"])
+        out.append(S["w3"] % (k(o.recv_gate), w3["crossed"], k(w3["median"]), k(w3["max"]), top))
+    else:
+        out.append(S["w3_none"] % k(o.recv_gate))
+    ratio = (float(w4["reread"]) / w4["cap_marks"]) if w4["cap_marks"] else 0.0
+    out.append(S["w4"] % (w4["results"], by(w4["bytes"]), by(o.result_cap), w4["over"],
+                          by(w4["over_bytes"]), w4["cap_marks"], w4["reread"], "%.0f%%" % (100 * ratio)))
+    if tot["unmarked_sessions"]:
+        out.append(S["no_marks"] % tot["unmarked_sessions"])
+    out.append(S["omitted"])
+    if meta.get("html"):
+        out.append(S["html"] % meta["html"])
+    return "\n".join(out)
+
+
+def summary_split(before, after, meta, o, S, L):
+    out = [S["split_head"] % (time.strftime("%m-%d %H:%M", time.localtime(meta["split_from"])),
+                             meta["split_label"])]
+    rows = [("W1", pct(before["w1"]["share"]), pct(after["w1"]["share"])),
+            ("W1b recv only", str(before["w1"]["pure_recv_turns"]), str(after["w1"]["pure_recv_turns"])),
+            ("W2", k(before["w2"]["median"]) + "/" + k(before["w2"]["max"]),
+             k(after["w2"]["median"]) + "/" + k(after["w2"]["max"])),
+            ("W3 max", k(before["w3"]["max"]), k(after["w3"]["max"])),
+            ("W4 over", str(before["w4"]["over"]), str(after["w4"]["over"]))]
+    for name, b, a in rows:
+        out.append(S["split_row"] % (name, b, a))
+    return "\n".join(out)
+
+
+# ---------------------------------------------------------------- html
+def render(sessions, tot, meta, S, L, split=None):
+    seats = by_seat(sessions)
+    w1, w2, w3, w4 = tot["w1"], tot["w2"], tot["w3"], tot["w4"]
+    H = ['<!doctype html><meta charset="utf-8"><title>ctx-window</title>', TIME.CSS,
+         '<h1>ctx-window — where the conversation window went</h1>',
+         '<p>%s · %g%s · 세션 %d개 · 읽기 %s</p>' % (
+             html.escape(time.strftime("%Y-%m-%d %H:%M")), meta["hours"],
+             "시간" if L == "ko" else "h", len(sessions), TIME.mb(meta["read_bytes"]))]
+    for n in meta["notes"]:
+        H.append("<p><b>%s</b></p>" % html.escape(n))
+    H.append("<h2>1. 네 숫자</h2><table><tr><th>숫자</th><th class=n>값</th><th>뜻</th></tr>")
+    H.append("<tr><td>W1 알림 턴 몫</td><td class=n>%s</td><td>부팅 뒤 %d턴 가운데 알림 턴 %d · "
+             "recv 만 한 턴 %d (가중 비용 = 읽기 0.1 · 쓰기 1.25 · 입력 1.0)</td></tr>"
+             % (pct(w1["share"]), w1["booted_turns"], w1["bell_turns"], w1["pure_recv_turns"]))
+    H.append("<tr><td>W2 부팅에 쓴 대화창</td><td class=n>%s / %s</td><td>중앙 / 최대 · 도구 호출 중앙 %d회</td></tr>"
+             % (k(w2["median"]), k(w2["max"]), w2["calls_median"]))
+    H.append("<tr><td>W3 문턱 뒤 넘침</td><td class=n>%s</td><td>문턱 %s · 넘은 세션 %d · 중앙 %s · 최대 %s</td></tr>"
+             % (k(w3["max"]), k(meta["gate"]), w3["crossed"], k(w3["median"]), k(w3["max"])))
+    H.append("<tr><td>W4 도구 결과</td><td class=n>%s</td><td>%d건 · %s 초과 %d건(초과분 %s) · 절단 통지 %d · 되읽기 %d</td></tr>"
+             % (by(w4["bytes"]), w4["results"], by(meta["cap"]), w4["over"], by(w4["over_bytes"]),
+                w4["cap_marks"], w4["reread"]))
+    H.append("</table>")
+    H.append("<h2>2. %s별</h2><table><tr><th>%s</th><th>역할</th><th class=n>세션</th>"
+             "<th class=n>W2 중앙</th><th class=n>W2 최대</th></tr>" % (S["seats"], S["seats"]))
+    for g in sorted(seats, key=lambda z: -z["w2_max"]):
+        H.append("<tr><td>%s</td><td>%s</td><td class=n>%d</td><td class=n>%s</td><td class=n>%s</td></tr>"
+                 % (html.escape(g["seat"]), html.escape(g["role"]), g["sessions"],
+                    k(g["w2_median"]), k(g["w2_max"])))
+    H.append("</table>")
+    H.append("<h2>3. 세션별(끝 대화창 큰 순 24개)</h2><table><tr><th>%s</th><th>역할</th>"
+             "<th class=n>턴</th><th class=n>%s</th><th class=n>W2</th><th class=n>끝 대화창</th>"
+             "<th class=n>W3 넘침</th><th class=n>W4</th><th>비고</th></tr>"
+             % (S["seats"], S["boot_mark"]))
+    for s in sorted(sessions, key=lambda z: -z["final_ctx"])[:24]:
+        tags = []
+        if not s["marked"]:
+            tags.append("표식 없음")
+        if s["truncated"]:
+            tags.append("읽기 잘림")
+        H.append("<tr><td>%s</td><td>%s</td><td class=n>%d</td><td class=n>%s</td><td class=n>%s</td>"
+                 "<td class=n>%s</td><td class=n>%s</td><td class=n>%s</td><td>%s</td></tr>"
+                 % (html.escape(s["seat"]), html.escape(s["role"]), s["turns"],
+                    "-" if s["boot_end_turn"] is None else str(s["boot_end_turn"]),
+                    k(s["boot_end_ctx"] - s["first_ctx"]) if s["marked"] else "-",
+                    k(s["final_ctx"]), "-" if s["overflow"] is None else k(s["overflow"]),
+                    by(s["w4"]["bytes"]), html.escape(", ".join(tags) or "-")))
+    H.append("</table>")
+    if split is not None:
+        b, a = split
+        head = S["split_head"] % (time.strftime("%m-%d %H:%M", time.localtime(meta["split_from"])),
+                                   meta["split_label"])
+        H.append("<h2>4. %s</h2><table><tr><th>숫자</th><th class=n>%s</th><th class=n>%s</th></tr>"
+                 % (html.escape(head), S["col_before"], S["col_after"]))
+        for name, f in (("W1", lambda t: pct(t["w1"]["share"])),
+                        ("W1b", lambda t: str(t["w1"]["pure_recv_turns"])),
+                        ("W2 중앙", lambda t: k(t["w2"]["median"])),
+                        ("W3 최대", lambda t: k(t["w3"]["max"])),
+                        ("W4 초과", lambda t: str(t["w4"]["over"]))):
+            H.append("<tr><td>%s</td><td class=n>%s</td><td class=n>%s</td></tr>"
+                     % (html.escape(name), f(b), f(a)))
+        H.append("</table>")
+    H.append("<h2>5. 안전 — 읽는 것과 내보내는 것</h2><table><tr><th>읽는다</th><th>어떻게</th>"
+             "<th>내보낸다</th></tr>"
+             "<tr><td>usage 숫자 · timestamp · type · role · session_info.name</td><td>값 그대로</td>"
+             "<td>숫자 · 좌석 이름</td></tr>"
+             "<tr><td>도구 결과 글</td><td>utf-8 바이트 수 · W4c 절단 통지 판별(통지 꼴 줄을 글 전체에서 찾고 "
+             "그 줄 앞·뒤 바이트 수를 통지의 두 숫자와 견줌)</td><td>숫자만(건수) — 통지 줄의 숫자 · 경로 · 글은 "
+             "내보내지 않는다</td></tr>"
+             "<tr><td>사용자 글</td><td>머리 40자 안의 <code>[발주 #</code> 유무</td><td>숫자만</td></tr>"
+             "<tr><td>도구 호출 인자</td><td><code>command</code> 안의 <code>[부팅 보고]</code> 유무 · "
+             "인자 전체 안의 <code>ft-tool-result/</code> 유무</td><td>숫자만</td></tr>"
+             "<tr><td>모델 글 · 생각</td><td>읽지 않는다</td><td>—</td></tr></table>"
+             "<p>글의 내용은 터미널 · html · json 어디에도 나오지 않는다. 명령 줄 머리도 내보내지 않는다. "
+             "고정 표식은 셋(<code>[발주 #</code> · <code>[부팅 보고]</code> · <code>ft-tool-result/</code>)이고 "
+             "꼴 판별이 둘(W1c 순수 recv · W4c 절단 통지)이다. 바이트까지 같은 통지 모양을 원문이 인용하면 "
+             "W4c 는 구분하지 못한다 — 형식 판별 지표다.</p>")
+    return "\n".join(H)
+
+
+# ---------------------------------------------------------------- main
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="ctx-window",
+                                 description="Where did the conversation window go? (read-only)")
+    ap.add_argument("--seat", default=None, help="seat name pattern (regex)")
+    ap.add_argument("--role", default=None, help="master · arch · nano · desk · da")
+    ap.add_argument("--hours", type=float, default=3.0, help="window in hours (default 3)")
+    ap.add_argument("--max-sessions", type=int, default=40, help="sessions measured (default 40 · 0 = no cap)")
+    ap.add_argument("--max-mb", type=float, default=40, help="bytes read in MB (default 40 · 0 = no cap)")
+    ap.add_argument("--max-scan", type=int, default=3000, help="files stat'ed (default 3000 · 0 = no cap)")
+    ap.add_argument("--recv-gate", type=int, default=280000, help="W3 gate in tokens (default 280000)")
+    ap.add_argument("--result-cap", type=int, default=2048, help="W4 result cap in bytes (default 2048)")
+    ap.add_argument("--from", dest="w_from", default=None, help="window start (epoch or 'YYYY-MM-DD HH:MM[:SS]')")
+    ap.add_argument("--to", dest="w_to", default=None, help="window end")
+    ap.add_argument("--split", default=None, help="compare before/after this moment")
+    ap.add_argument("--out", default=DEFAULT_OUT, help="html folder (default ~/.cache/ctx-burn/window)")
+    ap.add_argument("--no-html", action="store_true", help="write nothing")
+    ap.add_argument("--json", action="store_true", help="machine readable (contract ctx-window.v1)")
+    ap.add_argument("--lang", choices=["en", "ko"], default="en", help="output language (default en)")
+    o = ap.parse_args(argv)
+    S, L = STR[o.lang], o.lang
+
+    def moment(x):
+        if x is None:
+            return None
+        try:
+            return float(x)
+        except ValueError:
+            pass
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M:%S"):
+            try:
+                return datetime.strptime(x, fmt).timestamp()
+            except ValueError:
+                continue
+        raise SystemExit("ctx-window: cannot read the moment %r (use epoch or 'YYYY-MM-DD HH:MM[:SS]')" % x)
+
+    now = time.time()
+    w_to = moment(o.w_to) or now
+    w_from = moment(o.w_from) or (w_to - o.hours * 3600)
+    if w_from >= w_to:
+        raise SystemExit("ctx-window: window is empty (--from is not before --to)")
+    split = moment(o.split)
+    if split is not None and not (w_from < split < w_to):
+        print(S["split_out"])
+        return 2
+
+    budget = TIME.Budget(o.max_mb)
+    files = TIME.list_files(("pi",))              # E5 — pi 만
+    keep, scan_cut = TIME.scan_window(files, o.max_scan, w_from, w_to)
+    picked, cut = TIME.pick(keep, o, budget)
+
+    notes, sessions, grown = [], [], 0
+    if scan_cut:
+        notes.append(S["trim_scan"] % (scan_cut, o.max_scan))
+    if cut["name"]:
+        notes.append(S["trim_name"] % (cut["name"], TIME.mb(budget.limit), TIME.mb(budget.name_limit)))
+    if cut["sessions"]:
+        notes.append(S["trim_sample"] % (cut["sessions"], o.max_sessions))
+    if cut["mb"]:
+        notes.append(S["trim_mb"] % (cut["mb"], TIME.mb(budget.limit)))
+
+    for rt, path, nm, role, cap in picked:
+        try:
+            lines, got, truncated = TIME.read_lines(path, cap)   # E9 — 여는 곳은 이 한 줄뿐
+        except OSError:
+            continue
+        budget.spent += got - cap                                  # 실제로 읽은 바이트로 장부를 맞춘다
+        if truncated:
+            grown += 1
+        turns, results, marks = parse_window_lines(lines, w_from, w_to)
+        st = turn_stats(turns, o.recv_gate)
+        if st is None:
+            continue
+        st["w4"] = result_stats(results, o.result_cap)
+        st["w4"]["reread"] = st["reread"]
+        st.update({"seat": nm, "role": role, "file": path, "truncated": truncated,
+                   "marked": any(marks.values()), "turns_raw": turns, "results_raw": results})
+        sessions.append(st)
+
+    tot = totals(sessions)
+    if grown:                                   # E10 — 잘린 세션은 W3 에서 뺀다
+        notes.append(S["trunc"] % grown)
+
+    meta = {"hours": (w_to - w_from) / 3600.0, "from": w_from, "to": w_to, "notes": notes,
+            "html": None, "read_bytes": budget.spent, "gate": o.recv_gate, "cap": o.result_cap}
+    if split is not None:
+        meta["split_from"] = w_from
+        meta["split_label"] = time.strftime("%m-%d %H:%M", time.localtime(split))
+
+    if o.json:
+        def clean(s):
+            return {x: v for x, v in s.items() if x not in ("turns_raw", "results_raw",
+                                                            "bell_cost", "booted_cost")}
+        out = {"schema": "ctx-window.v1",
+               "window": {"from": w_from, "to": w_to, "hours": meta["hours"]},
+               "sample": {"files_listed": len(files), "files_scanned": len(keep), "scan_cut": scan_cut,
+                          "name_unseen": cut["name"], "sessions_dropped": cut["sessions"],
+                          "mb_dropped": cut["mb"], "read_truncated": grown, "read_bytes": budget.spent,
+                          "gate": o.recv_gate, "result_cap": o.result_cap},
+               "notes": notes, "totals": tot, "sessions": [clean(s) for s in sessions],
+               "omitted": ["codex", "claude", "hermes"]}
+        if split is not None:
+            out["split"] = {"at": split,
+                            "before": totals(restrict(sessions, w_from, split, o.recv_gate, o.result_cap)),
+                            "after": totals(restrict(sessions, split, w_to, o.recv_gate, o.result_cap))}
+        print(json.dumps(out, ensure_ascii=False, indent=1))
+        return 0
+
+    if not sessions:
+        print(S["head"] % ("%g" % meta["hours"], 0, TIME.mb(0), time.strftime("%Y-%m-%d %H:%M")))
+        for n in notes:
+            print(n)
+        print(S["no_session"])
+        print(S["omitted"])
+        return 0
+
+    html_path = None
+    if not o.no_html:
+        out_dir = os.path.expanduser(o.out)
+        os.makedirs(out_dir, exist_ok=True)
+        html_path = os.path.join(out_dir, "ctx-window.html")
+    meta["html"] = html_path
+    print(summary(sessions, tot, meta, notes, o, S, L))
+    parts = None
+    if split is not None:
+        parts = (totals(restrict(sessions, w_from, split, o.recv_gate, o.result_cap)),
+                 totals(restrict(sessions, split, w_to, o.recv_gate, o.result_cap)))
+        print()
+        print(summary_split(parts[0], parts[1], meta, o, S, L))
+    if html_path:
+        with open(html_path, "w", encoding="utf-8") as f:
+            f.write(render(sessions, tot, meta, S, L, parts))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,720 @@
+// Pure-logic tests for AIRAG.swift (build: swiftc -D AIRAG_TEST AIRAG.swift main.swift; see build.sh `test`).
+// No child process, no sleep, no file or network access: the clock, launcher and signal sender are fakes.
+// Counterexamples pinned here: K4 (silent stop -> red), K5 (stop leaves a running tick), K8 (wrong app location).
+
+import Foundation
+
+var failures = 0
+var total = 0
+
+func check(_ condition: Bool, _ name: String, line: Int = #line) {
+    total += 1
+    if !condition {
+        failures += 1
+        print("FAIL \(name) (line \(line))")
+    }
+}
+
+let t0 = parseTickTimestamp("2026-10-29T10:00:00+00:00")!
+func at(_ seconds: TimeInterval) -> Date { t0.addingTimeInterval(seconds) }
+
+// --- timestamp and log line parsing
+check(parseTickTimestamp("2026-10-18T00:45:17.319231+00:00") == parseTickTimestamp("2026-10-18T00:45:17+00:00"),
+      "6-digit fraction is ignored")
+check(parseTickTimestamp("not a time") == nil, "bad timestamp is nil")
+
+let okLine = #"{"exit":0,"probe":{"x":1},"status":"ok","ts":"2026-10-29T10:00:00.5+00:00"}"#
+let okStatus = parseLastLogLine(okLine)
+check(okStatus?.status == "ok" && okStatus?.code == nil && okStatus?.ts == t0, "ok line")
+
+let failLine = #"{"code":"OP_READ_UNAVAILABLE","exit":30,"status":"key_error","ts":"2026-10-29T10:05:00+00:00"}"#
+let failStatus = parseLastLogLine(failLine)
+check(failStatus?.status == "key_error" && failStatus?.code == "OP_READ_UNAVAILABLE", "failure line keeps code")
+
+check(parseLastLogLine(okLine + "\n" + failLine + "\n\n  \n")?.status == "key_error", "last non-empty line wins")
+check(parseLastLogLine("") == nil, "empty text is nil")
+check(parseLastLogLine("garbage") == nil, "garbage is nil")
+check(parseLastLogLine(#"{"status":"ok""#) == nil, "cut line (tail chunk start) is nil")
+check(parseLastLogLine("[1,2]") == nil, "non-object JSON is nil")
+check(parseLastLogLine(#"{"exit":0}"#) == nil, "missing status is nil")
+check(parseLastLogLine(#"{"status":"ok sk-abcdef secret"}"#) == nil, "free text in status is refused")
+check(parseLastLogLine(#"{"status":"key_error","code":"a b"}"#)?.code == nil, "free text in code is dropped")
+check(parseLastLogLine(#"{"status":"ok"}"#)?.ts == nil, "missing ts keeps status")
+
+// --- K4: icon colour, silent stop
+let appStart = at(0)
+func light(_ status: String?, lastAt: TimeInterval?, now: TimeInterval, start: TimeInterval = 0, stopped: Bool = false) -> Light {
+    let last = status.map { TickStatus(ts: lastAt.map(at), status: $0, code: nil) }
+    return lightFor(last: last, now: at(now), appStart: at(start), stopped: stopped)
+}
+check(light("ok", lastAt: 0, now: 60) == .green, "fresh ok is green")
+check(light("ok", lastAt: 0, now: 900) == .green, "exactly 15 min is still green")
+check(light("ok", lastAt: 0, now: 901) == .red, "K4: ok older than 15 min is red")
+check(light("skipped", lastAt: 0, now: 60) == .yellow, "skipped is yellow")
+check(light("degraded", lastAt: 0, now: 60) == .yellow, "degraded is yellow")
+check(light("key_error", lastAt: 0, now: 60) == .red, "key_error is red")
+check(light("internal_error", lastAt: 0, now: 60) == .red, "internal_error is red")
+check(light("brand_new_status", lastAt: 0, now: 60) == .red, "unknown status is red")
+check(light("ok", lastAt: 0, now: 100_000, stopped: true) == .gray, "stopped is gray even when stale")
+check(light(nil, lastAt: nil, now: 60) == .yellow, "no log yet, app young: yellow")
+check(light(nil, lastAt: nil, now: 901) == .red, "K4: no log at all for 15 min is red")
+check(light("ok", lastAt: -86_400, now: 60, start: 0) == .green, "old log line, app just started: not red yet")
+check(light("ok", lastAt: -86_400, now: 901, start: 0) == .red, "old log line, loop dead for 15 min: red")
+check(light("ok", lastAt: 10_000, now: 1000, start: 0) == .green, "log ts in the future is not stale")
+check(light("ok", lastAt: nil, now: 901, start: 0) == .red, "status without ts is judged from app start")
+
+// --- status line
+let utc = TimeZone(identifier: "UTC")!
+let lineOk = statusLine(last: TickStatus(ts: t0, status: "ok", code: nil), now: at(60), light: .green,
+                        running: false, stopped: false, launchFailed: false, timeZone: utc)
+check(lineOk == "마지막 패스 10:00:00, ok", "status line ok: \(lineOk)")
+let lineFail = statusLine(last: TickStatus(ts: t0, status: "key_error", code: "OP_READ_UNAVAILABLE"), now: at(60),
+                          light: .red, running: true, stopped: false, launchFailed: false, timeZone: utc)
+check(lineFail.contains("패스 실행 중") && lineFail.contains("key_error (OP_READ_UNAVAILABLE)"), "status line shows status and code")
+let lineStopped = statusLine(last: nil, now: at(60), light: .gray, running: false, stopped: true, launchFailed: false)
+check(lineStopped == "정지됨 / 아직 패스 기록 없음", "status line stopped, no log")
+check(statusLine(last: nil, now: at(60), light: .yellow, running: false, stopped: false, launchFailed: true).contains("tick 실행 실패"),
+      "status line shows launch failure")
+check(statusLine(last: TickStatus(ts: t0, status: "ok", code: nil), now: at(2000), light: .red, running: false,
+                 stopped: false, launchFailed: false, timeZone: utc).contains("15분 넘게"), "status line explains stale red")
+
+// --- K8: app location
+let home = "/Users/tester"
+check(checkAppPath(bundlePath: "/Users/tester/Applications/AIRAG.app", home: home) == .ok, "K8: ~/Applications is ok")
+check(checkAppPath(bundlePath: "/Users/tester/Applications/AIRAG.app/", home: home) == .ok, "K8: trailing slash is ok")
+check(checkAppPath(bundlePath: "/Users/tester/Applications/./AIRAG.app", home: home) == .ok, "K8: dot segment is ok")
+check(checkAppPath(bundlePath: "/Users/tester/Downloads/AIRAG.app", home: home) == .wrongLocation, "K8: Downloads is wrong")
+check(checkAppPath(bundlePath: "/Applications/AIRAG.app", home: home) == .wrongLocation, "K8: /Applications is wrong")
+check(checkAppPath(bundlePath: "/Users/other/Applications/AIRAG.app", home: home) == .wrongLocation, "K8: other user's folder is wrong")
+check(checkAppPath(bundlePath: "/Users/tester/Applications/AIRAG.app.zip/AIRAG.app", home: home) == .wrongLocation,
+      "K8: lookalike path is wrong")
+check(checkAppPath(bundlePath: "/private/var/folders/ab/T/AppTranslocation/1234-ABCD/d/AIRAG.app", home: home) == .translocated,
+      "K8: translocated copy is named as such")
+check(checkAppPath(bundlePath: "/Users/tester/Applications/AIRAG.app", home: "/Users/tester/") == .ok, "K8: home with trailing slash")
+
+// --- settings and tick arguments (design G3)
+let defaults = resolveSettings(home: home, json: nil)
+check(tickArguments(defaults) == [
+    "-m", "airag_consumer.tick",
+    "--config", "/Users/tester/.local/share/airag/projects/aifp/runtime.json",
+    "--credentials", "/Users/tester/.config/airag/credential-source.json",
+    "--log-dir", "/Users/tester/.local/share/airag/logs"], "default tick arguments match the plist")
+check(defaults.python == "/Users/tester/.local/share/airag/runtime/bin/python", "default python")
+let overridden = resolveSettings(home: home, json: Data(#"{"python":"~/rt/bin/python","log_dir":"/tmp/x","config":"relative/path","credentials":5}"#.utf8))
+check(overridden.python == "/Users/tester/rt/bin/python", "override with ~ expansion")
+check(overridden.logDir == "/tmp/x", "override absolute path")
+check(overridden.config == defaults.config, "relative override is ignored")
+check(overridden.credentials == defaults.credentials, "non-string override is ignored")
+check(resolveSettings(home: home, json: Data("not json".utf8)) == defaults, "bad JSON gives defaults")
+check(resolveSettings(home: home, json: Data(#"{"python":""}"#.utf8)) == defaults, "empty override is ignored")
+
+// --- log file names
+check(tickLogNamesNewestFirst(["tick.lock", "tick-20261018.log", "tick-20261029.log", "tick-2026102.log", "tick-2026102x.log",
+                                "app.err.log", "launchd.out.log", "tick-20261017.log"])
+      == ["tick-20261029.log", "tick-20261018.log", "tick-20261017.log"], "log names: newest first, junk skipped")
+check(tickLogNamesNewestFirst([]).isEmpty, "log names: empty")
+
+
+// --- Pass controller, fake world (R2: the group, not the leader, decides when a pass is over)
+final class FakeTimer: Cancellable {
+    let delay: TimeInterval
+    let action: () -> Void
+    var cancelled = false
+    var fired = false
+    init(_ delay: TimeInterval, _ action: @escaping () -> Void) { self.delay = delay; self.action = action }
+    func cancel() { cancelled = true }
+}
+
+/// A fake process world. `alive` = groups that still have members. TERM is ignored unless `termKills`;
+/// KILL empties the group at once (the leader's exit callback still arrives later, by hand).
+final class FakeOps: ProcessOps {
+    var spawns = 0
+    var exits: [(Int32) -> Void] = []
+    var signals: [(Int32, Int32)] = []
+    var spawnResult: [Int32?] = []
+    var alive = Set<Int32>()
+    var termKills = false
+    var killKills = true
+    func spawn(onExit: @escaping (Int32) -> Void) -> Int32? {
+        spawns += 1
+        let group = spawnResult.isEmpty ? Int32(100 + spawns) : spawnResult.removeFirst()
+        if let group = group { alive.insert(group); exits.append(onExit) }
+        return group
+    }
+    func signalGroup(_ pgid: Int32, _ sig: Int32) {
+        signals.append((pgid, sig))
+        if (sig == SIGTERM && termKills) || (sig == SIGKILL && killKills) { alive.remove(pgid) }
+    }
+    func groupAlive(_ pgid: Int32) -> Bool { alive.contains(pgid) }
+}
+
+final class Rig {
+    var timers: [FakeTimer] = []
+    let ops = FakeOps()
+    var changes = 0
+    lazy var controller = PassController(
+        interval: 300, killGrace: 10, pollInterval: 0.2, cleanupGrace: 5,
+        schedule: { delay, action in
+            let timer = FakeTimer(delay, action)
+            self.timers.append(timer)
+            return timer
+        },
+        ops: ops)
+    init() { controller.onChange = { self.changes += 1 } }
+    func live(_ delay: TimeInterval) -> [FakeTimer] { timers.filter { $0.delay == delay && !$0.cancelled && !$0.fired } }
+    func fire(_ timer: FakeTimer) { timer.fired = true; timer.action() }
+    func signalCount(_ sig: Int32) -> Int { ops.signals.filter { $0.1 == sig }.count }
+}
+
+do {  // K5 on the group: stop = TERM to the group, KILL after the grace
+    let rig = Rig()
+    rig.controller.start()
+    check(rig.ops.spawns == 1 && rig.controller.state == .running && rig.controller.group == 101, "start launches one pass")
+    rig.controller.start()
+    check(rig.ops.spawns == 1, "start while running does nothing")
+    rig.controller.stop()
+    check(rig.ops.signals.count == 1 && rig.ops.signals[0] == (101, SIGTERM), "K5: stop sends SIGTERM to the group")
+    check(rig.controller.state == .stopped && rig.controller.isStopping, "K5: stopping while the group lives")
+    check(rig.live(10).count == 1, "K5: SIGKILL is scheduled for 10 s later")
+    rig.controller.stop()
+    check(rig.signalCount(SIGTERM) == 1, "K5: second stop does not signal again")
+    rig.controller.start()
+    check(rig.ops.spawns == 1, "K5: start is refused while the group is still there")
+    rig.fire(rig.live(10)[0])
+    check(rig.ops.signals.last! == (101, SIGKILL), "K5: group still alive after 10 s gets SIGKILL")
+    rig.ops.exits[0](9)
+    check(rig.controller.group == nil && !rig.controller.isStopping, "group empty and leader gone clears the stop")
+    check(rig.live(300).isEmpty && rig.ops.spawns == 1, "K5: no next pass after stop")
+    rig.controller.start()
+    check(rig.ops.spawns == 2 && rig.controller.state == .running, "restart after stop launches a new pass")
+}
+
+do {  // the whole group ends within the grace: the kill timer is cancelled
+    let rig = Rig()
+    rig.controller.start()
+    rig.controller.stop()
+    rig.ops.alive.remove(101)
+    rig.ops.exits[0](15)
+    let kill = rig.timers.first { $0.delay == 10 }!
+    check(kill.cancelled, "kill timer is cancelled once the group is empty")
+    rig.fire(kill)
+    check(rig.signalCount(SIGKILL) == 0, "late kill timer sends no SIGKILL")
+}
+
+do {  // R2 direct cause: the leader exits, orphans stay; the kill timer must survive
+    let rig = Rig()
+    rig.controller.start()
+    rig.controller.stop()
+    rig.ops.exits[0](15)  // leader gone, group still has members
+    check(rig.controller.group == 101 && rig.controller.isStopping, "R2: leader exit with orphans keeps the stop open")
+    check(rig.live(10).count == 1, "R2: kill timer is not cancelled by the leader's exit")
+    check(rig.timers.filter { $0.delay == 10 }.count == 1 && rig.signalCount(SIGTERM) == 1,
+          "R2: the leader's exit neither re-arms the kill timer nor repeats TERM")
+    check(rig.live(0.2).count == 1, "R2: the group is polled after the leader is gone")
+    rig.controller.start()
+    check(rig.ops.spawns == 1, "R2: start is refused while orphans live")
+    rig.fire(rig.live(10)[0])
+    check(rig.signalCount(SIGKILL) == 1, "R2: orphans get SIGKILL after the grace")
+    rig.fire(rig.live(0.2)[0])
+    check(rig.controller.group == nil && rig.live(300).isEmpty, "R2: group empty ends the stop, no pass is scheduled")
+    rig.controller.start()
+    check(rig.ops.spawns == 2, "R2: start works once the group is empty")
+}
+
+do {  // orphan after a normal pass: draining until the group is empty, only then waiting
+    let rig = Rig()
+    rig.controller.start()
+    rig.ops.exits[0](0)  // leader ends, a grandchild stays
+    check(rig.controller.state == .draining, "R2: orphans make the pass draining")
+    check(rig.signalCount(SIGTERM) == 1 && rig.ops.signals[0] == (101, SIGTERM), "R2: orphans get SIGTERM at once")
+    check(rig.live(300).isEmpty, "R2: no next pass while draining")
+    rig.controller.start()
+    check(rig.ops.spawns == 1, "R2: start while draining does nothing")
+    rig.fire(rig.live(0.2)[0])
+    check(rig.controller.state == .draining && rig.live(0.2).count == 1, "R2: still alive, poll again")
+    rig.ops.alive.remove(101)
+    rig.fire(rig.live(0.2)[0])
+    check(rig.controller.state == .waiting && rig.live(300).count == 1 && rig.controller.group == nil,
+          "R2: waiting only after the group is empty")
+}
+
+do {  // stubborn orphan after a pass: KILL after the grace, then normal flow
+    let rig = Rig()
+    rig.controller.start()
+    rig.ops.exits[0](0)
+    rig.fire(rig.live(10)[0])
+    check(rig.signalCount(SIGKILL) == 1 && !rig.ops.alive.contains(101), "R2: stubborn orphan gets SIGKILL")
+    rig.fire(rig.live(0.2)[0])
+    check(rig.controller.state == .waiting && rig.live(300).count == 1, "R2: next pass is scheduled after the orphan is gone")
+}
+
+do {  // stop while draining: no second TERM
+    let rig = Rig()
+    rig.controller.start()
+    rig.ops.exits[0](0)
+    rig.controller.stop()
+    check(rig.signalCount(SIGTERM) == 1, "stop while draining does not send TERM again")
+    check(rig.controller.state == .stopped && rig.controller.group == 101, "stop while draining stays stopping")
+    rig.ops.alive.remove(101)
+    rig.fire(rig.live(0.2)[0])
+    check(rig.controller.group == nil && rig.live(300).isEmpty, "stop while draining: empty group ends it without a new pass")
+}
+
+do {  // cleanupFailed: SIGKILL did not empty the group
+    let rig = Rig()
+    rig.ops.killKills = false
+    rig.controller.start()
+    rig.controller.stop()
+    rig.fire(rig.live(10)[0])
+    check(rig.live(5).count == 1 && !rig.controller.cleanupFailed, "KILL sent, cleanup timer waits 5 s")
+    rig.fire(rig.live(5)[0])
+    check(rig.controller.cleanupFailed, "group survives KILL for 5 s: cleanupFailed")
+    rig.controller.start()
+    check(rig.ops.spawns == 1, "cleanupFailed keeps start disabled")
+    rig.ops.alive.remove(101)
+    rig.ops.exits[0](9)
+    check(!rig.controller.cleanupFailed && rig.controller.group == nil, "cleanupFailed clears when the group finally empties")
+    rig.controller.start()
+    check(rig.ops.spawns == 2, "start works again after cleanupFailed cleared")
+}
+
+do {  // pass end schedules the next pass; stop cancels it; a timer that fires anyway does nothing
+    let rig = Rig()
+    rig.controller.start()
+    rig.ops.alive.remove(101)
+    rig.ops.exits[0](0)
+    check(rig.controller.state == .waiting && rig.live(300).count == 1, "pass end schedules the next pass in 300 s")
+    let next = rig.live(300)[0]
+    rig.controller.stop()
+    check(next.cancelled && rig.ops.signals.isEmpty, "K5: stop while waiting cancels the next pass, no signal")
+    next.action()
+    check(rig.ops.spawns == 1 && rig.controller.state == .stopped, "K5: cancelled timer that fires anyway does not launch")
+}
+
+do {
+    let rig = Rig()
+    rig.controller.start()
+    rig.ops.alive.remove(101)
+    rig.ops.exits[0](0)
+    rig.fire(rig.live(300)[0])
+    check(rig.ops.spawns == 2 && rig.controller.state == .running, "timer fires the next pass")
+}
+
+do {  // launch failure
+    let rig = Rig()
+    rig.ops.spawnResult = [nil]
+    rig.controller.start()
+    check(rig.controller.lastLaunchFailed && rig.controller.state == .waiting && rig.live(300).count == 1,
+          "launch failure waits and retries in 300 s")
+    rig.fire(rig.live(300)[0])
+    check(!rig.controller.lastLaunchFailed && rig.controller.state == .running, "retry after launch failure clears the flag")
+}
+
+do {
+    let rig = Rig()
+    rig.controller.stop()
+    check(rig.ops.signals.isEmpty && rig.controller.state == .stopped, "stop before start is harmless")
+    check(rig.changes >= 1, "stop reports a change to the UI")
+}
+
+// --- R2 fuzz: any order of leader exit, stop, start, timers, and group emptying never starts or schedules a
+// pass while a group still has members.
+struct LCG {
+    var state: UInt64
+    mutating func next(_ n: Int) -> Int {
+        state = state &* 6364136223846793005 &+ 1442695040888963407
+        return Int((state >> 33) % UInt64(n))
+    }
+}
+
+do {
+    var violations: [String] = []
+    runs: for seed in 1...1500 {
+        var rng = LCG(state: UInt64(seed))
+        let rig = Rig()
+        rig.ops.termKills = rng.next(3) == 0
+        var leaderExited = Set<Int>()
+        for step in 0..<14 {
+            let event = rng.next(7)
+            let spawnsBefore = rig.ops.spawns
+            let blocked = !rig.ops.alive.isEmpty || rig.controller.group != nil
+            switch event {
+            case 0: rig.controller.stop()
+            case 1: rig.controller.start()
+            case 2:
+                let pending = rig.timers.filter { !$0.cancelled && !$0.fired }
+                if !pending.isEmpty { rig.fire(pending[rng.next(pending.count)]) }
+            case 3:
+                let dead = rig.timers.filter { $0.cancelled && !$0.fired }
+                if !dead.isEmpty { let timer = dead[rng.next(dead.count)]; timer.fired = true; timer.action() }
+            case 4:
+                if let index = rig.ops.exits.indices.first(where: { !leaderExited.contains($0) }) {
+                    leaderExited.insert(index)
+                    rig.ops.exits[index](0)
+                }
+            case 5:
+                if let index = leaderExited.first, rig.ops.alive.contains(Int32(101 + index)) { rig.ops.alive.remove(Int32(101 + index)) }
+            default: break
+            }
+            let tag = "seed \(seed) step \(step) event \(event)"
+            if !rig.ops.alive.isEmpty && !rig.live(300).isEmpty { violations.append("\(tag): pass scheduled while a group lives") }
+            if !rig.ops.alive.isEmpty && rig.controller.state == .waiting { violations.append("\(tag): waiting while a group lives") }
+            if rig.controller.state == .waiting && rig.controller.group != nil { violations.append("\(tag): waiting with a group") }
+            if event == 1 && blocked && rig.ops.spawns != spawnsBefore { violations.append("\(tag): start while a group lives") }
+            if violations.count >= 3 { break runs }
+        }
+    }
+    for line in violations { print("FAIL R2 fuzz: \(line)") }
+    total += 1
+    if !violations.isEmpty { failures += 1 }
+}
+
+// --- Real processes (/bin/sh and sleep only). Every group is killed at the end of its test.
+@discardableResult func pump(_ timeout: TimeInterval = 3, until condition: () -> Bool) -> Bool {
+    let end = Date().addingTimeInterval(timeout)
+    while !condition() {
+        if Date() >= end { return false }
+        if !RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.02)) { Thread.sleep(forTimeInterval: 0.005) }
+    }
+    return true
+}
+
+let testEnvironment = ["PATH": "/usr/bin:/bin"]
+
+final class RecordingOps: ProcessOps {
+    let inner: LiveProcessOps
+    var groups: [Int32] = []
+    var signals: [(Int32, Int32)] = []
+    init(script: String, callbackQueue: DispatchQueue = .main) {
+        inner = LiveProcessOps(executable: "/bin/sh", arguments: ["-c", script], environment: testEnvironment, stderrPath: nil,
+                               callbackQueue: callbackQueue)
+    }
+    var spawnCount: Int { groups.count }
+    func spawn(onExit: @escaping (Int32) -> Void) -> Int32? {
+        let group = inner.spawn(onExit: onExit)
+        if let group = group { groups.append(group) }
+        return group
+    }
+    func signalGroup(_ pgid: Int32, _ sig: Int32) { signals.append((pgid, sig)); inner.signalGroup(pgid, sig) }
+    func groupAlive(_ pgid: Int32) -> Bool { inner.groupAlive(pgid) }
+    func reapAll() { for group in groups { inner.signalGroup(group, SIGKILL) } }
+    func anyAlive() -> Bool { groups.contains { inner.groupAlive($0) } }
+}
+
+func liveController(_ script: String, killGrace: TimeInterval = 10) -> (PassController, RecordingOps) {
+    let ops = RecordingOps(script: script)
+    let controller = PassController(interval: 300, killGrace: killGrace, pollInterval: 0.05, cleanupGrace: 5,
+                                    schedule: mainSchedule, ops: ops)
+    return (controller, ops)
+}
+
+do {  // T-pg
+    let ops = RecordingOps(script: "sleep 30")
+    let group = ops.spawn { _ in }
+    check(group != nil, "T-pg: spawn returns a pid")
+    if let group = group {
+        check(getpgid(group) == group, "T-pg: the child leads its own process group")
+        check(ops.groupAlive(group), "T-pg: group is alive after spawn")
+    }
+    ops.reapAll()
+    check(pump { !ops.anyAlive() }, "T-pg: test group is gone after SIGKILL")
+    check(!ops.inner.groupAlive(0) && !ops.inner.groupAlive(1) && !ops.inner.groupAlive(-5), "T-pg: group numbers 0, 1, negative are never alive")
+}
+
+do {  // T-stop: a leader with a child; stop must empty the whole group before start is allowed
+    let (controller, ops) = liveController("sleep 30 & sleep 30")
+    var staleView = false
+    controller.onChange = {
+        if controller.group == nil, let last = ops.groups.last, ops.inner.groupAlive(last) { staleView = true }
+    }
+    controller.start()
+    let group = controller.group
+    check(group != nil && getpgid(group ?? 0) == group, "T-stop: pass started as a group leader")
+    controller.stop()
+    check(controller.isStopping, "T-stop: stopping right after stop()")
+    controller.start()
+    check(ops.spawnCount == 1, "T-stop: start refused while the group lives")
+    check(pump { controller.group == nil }, "T-stop: controller idle within 3 s")
+    check(group.map { !ops.groupAlive($0) } ?? false, "T-stop: whole group is empty when the controller is idle")
+    check(!staleView, "T-stop: the controller never reported idle while the group had members")
+    controller.start()
+    check(ops.spawnCount == 2, "T-stop: start works after the group is empty")
+    controller.stop()
+    check(pump { controller.group == nil }, "T-stop: second stop ends too")
+    ops.reapAll()
+    check(pump { !ops.anyAlive() }, "T-stop: nothing left over")
+}
+
+do {  // T-kill: the whole group ignores TERM; only SIGKILL after the grace ends it
+    let ready = NSTemporaryDirectory() + "airag-ready-\(getpid())"
+    let (controller, ops) = liveController("trap '' TERM; : > '\(ready)'; sleep 30 & sleep 30", killGrace: 0.5)
+    controller.start()
+    check(pump { FileManager.default.fileExists(atPath: ready) }, "T-kill: the TERM trap is installed before stop")
+    try? FileManager.default.removeItem(atPath: ready)
+    let begin = Date()
+    controller.stop()
+    check(pump { controller.group == nil }, "T-kill: group ended within 3 s")
+    check(Date().timeIntervalSince(begin) >= 0.4, "T-kill: TERM-ignoring group lived through the grace")
+    check(ops.signals.contains { $0.1 == SIGKILL }, "T-kill: SIGKILL was sent")
+    ops.reapAll()
+    check(pump { !ops.anyAlive() }, "T-kill: nothing left over")
+}
+
+do {  // T-kill-orphan: the leader exits by itself, a TERM-ignoring orphan stays
+    let (controller, ops) = liveController("trap '' TERM; sleep 30 & exit 0", killGrace: 0.5)
+    var seen: [PassController.State] = []
+    var earlyWaiting = false
+    controller.onChange = {
+        seen.append(controller.state)
+        if controller.state == .waiting, let last = ops.groups.last, ops.inner.groupAlive(last) { earlyWaiting = true }
+    }
+    controller.start()
+    check(pump { controller.state == .waiting }, "T-kill-orphan: pass ends within 3 s")
+    check(seen.contains(.draining), "T-kill-orphan: the pass went through draining")
+    check(!earlyWaiting, "T-kill-orphan: waiting began only after the group was empty")
+    check(ops.signals.contains { $0.1 == SIGKILL }, "T-kill-orphan: SIGKILL ended the TERM-ignoring orphan")
+    controller.stop()
+    ops.reapAll()
+    check(pump { !ops.anyAlive() }, "T-kill-orphan: nothing left over")
+}
+
+do {  // T-orphan: a plain orphan is ended by the group TERM; waiting only after the group is empty
+    let (controller, ops) = liveController("sleep 30 & exit 0")
+    var seen: [PassController.State] = []
+    var earlyWaiting = false
+    controller.onChange = {
+        seen.append(controller.state)
+        if controller.state == .waiting, let last = ops.groups.last, ops.inner.groupAlive(last) { earlyWaiting = true }
+    }
+    controller.start()
+    check(pump { controller.state == .waiting }, "T-orphan: pass ends within 3 s")
+    check(seen.contains(.draining), "T-orphan: the leader's exit with a live child gives draining")
+    check(!earlyWaiting, "T-orphan: waiting began only after the group was empty")
+    controller.stop()
+    ops.reapAll()
+    check(pump { !ops.anyAlive() }, "T-orphan: nothing left over")
+}
+
+do {  // the live factory wires the tick command from the settings
+    let settings = resolveSettings(home: "/Users/tester", json: nil)
+    let ops = makeTickOps(settings, callbackQueue: .main)
+    check(ops.executable == settings.python && ops.arguments == tickArguments(settings), "makeTickOps wires python and tick arguments")
+    check(ops.stderrPath == "/Users/tester/.local/share/airag/logs/app.err.log", "makeTickOps puts stderr in app.err.log")
+    check(ops.environment["PATH"] == "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin", "makeTickOps sets PATH")
+    check(makeLiveController(settings: settings).state == .stopped, "makeLiveController starts stopped")
+}
+
+// --- R3·R4: `--once` has one absolute deadline (kill chain at 45 / 52 / 57 s after start) and a path check first
+let dl = OnceDeadlines()
+check(dl.term == 45 && dl.kill == 52 && dl.giveUp == 57, "R3: default deadlines are 45 / 52 / 57 s")
+
+func step(_ elapsed: TimeInterval, path: PathCheck = .ok, exited: Bool = false, status: Int32 = 0, alive: Bool = true,
+          state: OnceState = OnceState(), deadlines: OnceDeadlines = OnceDeadlines()) -> OnceStep {
+    onceStep(elapsed: elapsed, path: path, leaderExited: exited, leaderStatus: status, groupAlive: alive, state: state, deadlines: deadlines)
+}
+func waitSeconds(_ s: OnceStep) -> TimeInterval? { if case .wait(let w) = s { return w }; return nil }
+
+check(step(0, path: .wrongLocation) == .refuse(78, "wrong_location"), "R4: wrong location refuses with 78")
+check(step(0, path: .translocated) == .refuse(78, "translocated"), "R4: translocated refuses with 78")
+check(step(30, path: .wrongLocation, exited: true, alive: false) == .refuse(78, "wrong_location"), "R4: refusal beats every other rule")
+check(waitSeconds(step(1)) == 0.2, "R3: far from a deadline the wait is the poll slice")
+check((waitSeconds(step(44.95)) ?? 9) <= 0.061 && (waitSeconds(step(44.95)) ?? 0) > 0, "R3: wait is cut at the TERM deadline")
+check(step(45) == .sendTerm, "R3: TERM at 45 s")
+check(waitSeconds(step(45, state: OnceState(termSent: true))) == 0.2, "R3: after TERM, wait for the KILL deadline")
+check(step(52, state: OnceState(termSent: true)) == .sendKill, "R3: KILL at 52 s")
+check(step(52) == .sendKill, "R3: a late first look at 52 s goes straight to KILL")
+check((waitSeconds(step(56.95, state: OnceState(termSent: true, killSent: true))) ?? 9) <= 0.061, "R3: wait is cut at the give-up deadline")
+check(step(57, state: OnceState(termSent: true, killSent: true, deadlineHit: true)) == .done(125, "deadline_dirty"), "R3: 57 s with a live group gives up with 125")
+check(step(100) == .done(125, "deadline_dirty"), "R3: far past 57 s still gives up")
+check(step(3, exited: true, status: 0, alive: false) == .done(0, "tick_exit"), "tick exit 0 with an empty group")
+check(step(3, exited: true, status: 3, alive: false) == .done(3, "tick_exit"), "tick exit code is passed through")
+check(step(60, exited: true, status: 0, alive: false, state: OnceState(termSent: true, killSent: true, deadlineHit: true)) == .done(124, "deadline"),
+      "R3: group emptied after the deadline kill gives 124")
+check(step(3, exited: true, alive: true) == .sendTerm, "R2: leader gone with orphans gives TERM at once")
+check(waitSeconds(step(3, exited: true, alive: true, state: OnceState(termSent: true))) == 0.2, "orphans already TERMed: wait")
+check(step(57, exited: true, alive: true, state: OnceState(termSent: true)) == .done(125, "deadline_dirty"), "orphans past 57 s: 125")
+check(step(100, exited: true, status: 0, alive: false) == .done(0, "tick_exit"), "empty group after a normal exit wins even late")
+
+let applied1 = OnceState().applying(.sendTerm, elapsed: 45, deadlines: dl)
+check(applied1 == OnceState(termSent: true, killSent: false, deadlineHit: true), "deadline TERM marks the deadline")
+let applied2 = OnceState().applying(.sendTerm, elapsed: 3, deadlines: dl)
+check(applied2 == OnceState(termSent: true, killSent: false, deadlineHit: false), "orphan TERM does not mark the deadline")
+check(OnceState().applying(.sendKill, elapsed: 52, deadlines: dl) == OnceState(termSent: true, killSent: true, deadlineHit: true), "KILL marks the deadline")
+
+do {  // R3 property: no sequence of waits can carry the command past 57 s
+    var bad: [String] = []
+    var elapsed = 0.0
+    while elapsed < 70 {
+        for bits in 0..<8 {
+            let state = OnceState(termSent: bits & 1 != 0, killSent: bits & 2 != 0, deadlineHit: bits & 4 != 0)
+            for exited in [false, true] {
+                let result = step(elapsed, exited: exited, alive: true, state: state)
+                if let w = waitSeconds(result) {
+                    if w <= 0 || w > 0.2 { bad.append("wait \(w) at \(elapsed)") }
+                    if elapsed < 57 && elapsed + w > 57.011 { bad.append("wait passes 57 s at \(elapsed)") }
+                    if elapsed >= 57 { bad.append("waits at \(elapsed)") }
+                }
+            }
+        }
+        elapsed += 0.37
+    }
+    check(bad.isEmpty, "R3: waits never pass the give-up deadline \(bad.prefix(2))")
+}
+
+// --- once log (0600, O_NOFOLLOW, one overwritten line, no values)
+var onceDirCounter = 0
+func freshDir() -> String {
+    onceDirCounter += 1
+    return NSTemporaryDirectory() + "airag-once-\(getpid())-\(onceDirCounter)"
+}
+func onceLogObject(_ dir: String) -> [String: Any]? {
+    guard let data = FileManager.default.contents(atPath: dir + "/app.once.log"),
+          let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }
+    return object
+}
+
+do {
+    let dir = freshDir()
+    check(writeOnceLog(dir: dir, result: "tick_exit", code: 0, elapsed: 1.234, now: t0), "once log: written into a new folder")
+    let object = onceLogObject(dir)
+    check(object?["result"] as? String == "tick_exit" && object?["code"] as? Int == 0 && object?["elapsed_s"] != nil
+          && (object?["ts"] as? String)?.hasPrefix("2026-10-29T10:00:00") == true, "once log: ts, result, code, elapsed_s")
+    check(Set((object ?? [:]).keys) == ["ts", "result", "code", "elapsed_s"], "once log: only the four fixed keys")
+    let attributes = try? FileManager.default.attributesOfItem(atPath: dir + "/app.once.log")
+    check((attributes?[.posixPermissions] as? Int) == 0o600, "once log: mode 0600")
+    check(writeOnceLog(dir: dir, result: "deadline", code: 124, elapsed: 9, now: t0), "once log: second write")
+    check(onceLogObject(dir)?["result"] as? String == "deadline", "once log: overwritten, not appended")
+    let text = (try? String(contentsOfFile: dir + "/app.once.log", encoding: .utf8)) ?? ""
+    check(text.split(separator: "\n").count == 1, "once log: exactly one line")
+    chmod(dir + "/app.once.log", 0o644)
+    check(writeOnceLog(dir: dir, result: "tick_exit", code: 0, elapsed: 1, now: t0), "once log: write over a loose file")
+    check(((try? FileManager.default.attributesOfItem(atPath: dir + "/app.once.log"))?[.posixPermissions] as? Int) == 0o600,
+          "once log: a loose file is tightened to 0600")
+}
+
+do {  // a symlink in the place of the log is refused and its target is left alone
+    let dir = freshDir()
+    try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+    let target = dir + "/victim.txt"
+    FileManager.default.createFile(atPath: target, contents: Data("keep".utf8))
+    try? FileManager.default.createSymbolicLink(atPath: dir + "/app.once.log", withDestinationPath: target)
+    check(!writeOnceLog(dir: dir, result: "tick_exit", code: 0, elapsed: 1, now: t0), "once log: symlink is refused")
+    check((try? String(contentsOfFile: target, encoding: .utf8)) == "keep", "once log: symlink target untouched")
+}
+
+do {  // a directory in the place of the log is refused
+    let dir = freshDir()
+    try? FileManager.default.createDirectory(atPath: dir + "/app.once.log", withIntermediateDirectories: true)
+    check(!writeOnceLog(dir: dir, result: "tick_exit", code: 0, elapsed: 1, now: t0), "once log: a directory is refused")
+}
+
+// --- runOnce
+let quick = OnceDeadlines(term: 0.9, kill: 1.2, giveUp: 1.8)
+
+func runOnceTest(script: String, path: PathCheck = .ok, deadlines: OnceDeadlines = quick, logDir: String? = nil)
+    -> (code: Int32, lines: [String], log: [String: Any]?, elapsed: TimeInterval, ops: RecordingOps) {
+    let dir = logDir ?? freshDir()
+    let ops = RecordingOps(script: script, callbackQueue: .global())
+    var lines: [String] = []
+    let begin = Date()
+    let code = runOnce(ops: ops, path: path, logDir: dir, startUptime: ProcessInfo.processInfo.systemUptime, deadlines: deadlines,
+                       stderrLine: { lines.append($0) })
+    let elapsed = Date().timeIntervalSince(begin)
+    ops.reapAll()
+    return (code, lines, onceLogObject(dir), elapsed, ops)
+}
+
+do {
+    let r = runOnceTest(script: "exit 7")
+    check(r.code == 7 && r.log?["result"] as? String == "tick_exit" && r.log?["code"] as? Int == 7, "T-once: tick exit code passes through")
+    check(r.lines == ["AIRAG once: tick_exit"], "T-once: one fixed stderr line")
+    check(r.elapsed < 1.5, "T-once: a quick tick ends quickly")
+}
+
+do {  // leader exits with an orphan: TERM at once, ends well before any deadline, keeps the tick's own code
+    let r = runOnceTest(script: "sleep 30 & exit 0")
+    check(r.code == 0 && r.log?["result"] as? String == "tick_exit", "T-once: orphan is ended, tick result kept")
+    check(r.elapsed < 0.9, "T-once: orphan cleanup does not wait for the deadline")
+    check(!r.ops.anyAlive(), "T-once: no group left after an orphan")
+    check(r.ops.signals.contains { $0.1 == SIGTERM } && !r.ops.signals.contains { $0.1 == SIGKILL }, "T-once: TERM only")
+}
+
+do {  // the whole group ignores TERM: KILL at the second deadline, 124, inside the third
+    let r = runOnceTest(script: "trap '' TERM; sleep 30")
+    check(r.code == 124 && r.log?["result"] as? String == "deadline", "T-once: stubborn tick ends with 124 deadline")
+    check(r.elapsed >= 1.15 && r.elapsed < 1.8, "T-once: ended between the KILL and the give-up deadline (\(r.elapsed))")
+    check(r.lines == ["AIRAG once: deadline"], "T-once: one fixed stderr line for the deadline")
+    check(!r.ops.anyAlive(), "T-once: group is empty after the deadline kill")
+    let order = r.ops.signals.map { $0.1 }
+    check(order == [SIGTERM, SIGKILL], "T-once: TERM then KILL, once each (\(order))")
+}
+
+do {  // a group nothing can end: give up at the third deadline with 125
+    let ops = FakeOps()
+    ops.killKills = false
+    var lines: [String] = []
+    let dir = freshDir()
+    let begin = Date()
+    let code = runOnce(ops: ops, path: .ok, logDir: dir, startUptime: ProcessInfo.processInfo.systemUptime,
+                       deadlines: OnceDeadlines(term: 0.05, kill: 0.08, giveUp: 0.12), stderrLine: { lines.append($0) })
+    let elapsed = Date().timeIntervalSince(begin)
+    check(code == 125 && onceLogObject(dir)?["result"] as? String == "deadline_dirty", "T-once: unkillable group gives 125")
+    check(elapsed >= 0.12 && elapsed < 0.6, "T-once: gave up right at the third deadline (\(elapsed))")
+    check(ops.signals.map { $0.1 } == [SIGTERM, SIGKILL], "T-once: TERM then KILL before giving up")
+    check(lines == ["AIRAG once: deadline_dirty"], "T-once: one fixed stderr line for giving up")
+}
+
+// --- T-path (R4): a wrong location never starts the tick
+for (path, word) in [(PathCheck.wrongLocation, "wrong_location"), (PathCheck.translocated, "translocated")] {
+    let ops = FakeOps()
+    var lines: [String] = []
+    let dir = freshDir()
+    let code = runOnce(ops: ops, path: path, logDir: dir, startUptime: ProcessInfo.processInfo.systemUptime, stderrLine: { lines.append($0) })
+    check(code == 78 && ops.spawns == 0, "T-path: \(word) gives 78 and no spawn")
+    check(onceLogObject(dir)?["result"] as? String == word && lines == ["AIRAG once: \(word)"], "T-path: \(word) is logged and printed")
+}
+
+do {  // launch failure
+    let ops = FakeOps()
+    ops.spawnResult = [nil]
+    let dir = freshDir()
+    let code = runOnce(ops: ops, path: .ok, logDir: dir, startUptime: ProcessInfo.processInfo.systemUptime, stderrLine: { _ in })
+    check(code == 69 && onceLogObject(dir)?["result"] as? String == "launch_failed", "launch failure gives 69")
+}
+
+// --- main order (R4): the path check runs before the mode split
+func menuAppCalls(arguments: [String], bundlePath: String) -> (code: Int32?, menuPaths: [PathCheck], spawns: Int, log: [String: Any]?) {
+    let dir = freshDir()
+    let settings = AppSettings(python: "/bin/sh", config: "c", credentials: "k", logDir: dir)
+    var menuPaths: [PathCheck] = []
+    var spawns = 0
+    let code = dispatchMode(arguments: arguments, bundlePath: bundlePath, home: "/Users/tester", startUptime: ProcessInfo.processInfo.systemUptime,
+                            settings: settings,
+                            makeOnceOps: { _ in
+                                let ops = FakeOps()
+                                spawns += 1
+                                return ops
+                            },
+                            stderrLine: { _ in },
+                            runMenuApp: { _, path in menuPaths.append(path) })
+    return (code, menuPaths, spawns, onceLogObject(dir))
+}
+
+let goodPath = "/Users/tester/Applications/AIRAG.app"
+let badPath = "/Users/tester/Downloads/AIRAG.app"
+do {
+    let wrong = menuAppCalls(arguments: ["AIRAG", "--once"], bundlePath: badPath)
+    check(wrong.code == 78 && wrong.menuPaths.isEmpty && wrong.log?["result"] as? String == "wrong_location",
+          "T-path: --once from Downloads ends with 78, no menu app")
+    let moved = menuAppCalls(arguments: ["AIRAG", "--once"], bundlePath: "/private/var/folders/x/T/AppTranslocation/ID/d/AIRAG.app")
+    check(moved.code == 78 && moved.log?["result"] as? String == "translocated", "T-path: --once from a translocated copy ends with 78")
+    let menuWrong = menuAppCalls(arguments: ["AIRAG"], bundlePath: badPath)
+    check(menuWrong.code == nil && menuWrong.menuPaths == [.wrongLocation], "T-path: menu mode still runs and gets the wrong-location verdict")
+    let menuGood = menuAppCalls(arguments: ["AIRAG"], bundlePath: goodPath)
+    check(menuGood.code == nil && menuGood.menuPaths == [.ok], "T-path: menu mode at the right place gets ok")
+    let lookalike = menuAppCalls(arguments: ["AIRAG", "--once-ish"], bundlePath: goodPath)
+    check(lookalike.code == nil && lookalike.menuPaths == [.ok], "T-path: only the exact --once argument selects the one-shot mode")
+}
+
+print("AIRAG tests: \(total - failures)/\(total) passed")
+exit(failures == 0 ? 0 : 1)

@@ -1,0 +1,894 @@
+<!DOCTYPE html>
+<html lang="ko"><head><meta charset="utf-8">
+<title>cairn plan viewer</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --border:#30363d; --border-soft:#21262d; --text:#e6edf3; --muted:#8b949e;
+    --done:#238636; --doing:#d29922; --todo:#484f58; --accent:#1f6feb;
+    --row-alt:rgba(255,255,255,0.045); --row-hover:#1c2333;
+    --wa:#79c0ff; --wr:#d2a8ff; --ww:#8b949e;
+    --bdg-done-bg:rgba(35,134,54,.2); --bdg-done-fg:#3fb950;
+    --bdg-doing-bg:rgba(210,153,34,.2); --bdg-doing-fg:#e3b341;
+    --bdg-todo-bg:rgba(72,79,88,.3); --bdg-todo-fg:#adbac7;
+    --bdg-blocked-bg:rgba(229,83,75,.2); --bdg-blocked-fg:#e5534b;
+  }
+  :root[data-theme="light"]{
+    --bg:#ffffff; --panel:#f6f8fa; --border:#d0d7de; --border-soft:#eaeef2; --text:#1f2328; --muted:#656d76;
+    --done:#1a7f37; --doing:#9a6700; --todo:#8c959f; --accent:#0969da;
+    --row-alt:rgba(0,0,0,0.035); --row-hover:#eef1f5;
+    --wa:#0969da; --wr:#8250df; --ww:#656d76;
+    --bdg-done-bg:rgba(26,127,55,.14); --bdg-done-fg:#1a7f37;
+    --bdg-doing-bg:rgba(154,103,0,.14); --bdg-doing-fg:#7d4e00;
+    --bdg-todo-bg:rgba(140,149,159,.22); --bdg-todo-fg:#57606a;
+    --bdg-blocked-bg:rgba(207,34,46,.12); --bdg-blocked-fg:#cf222e;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",sans-serif}
+  header{padding:16px 24px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--bg);z-index:10}
+  .theme-seg{position:absolute;top:16px;right:24px;display:flex;border:1px solid var(--border);border-radius:8px;overflow:hidden}
+  .theme-seg button{background:var(--panel);border:none;border-left:1px solid var(--border);color:var(--muted);padding:6px 10px;font-size:12px;cursor:pointer}
+  .theme-seg button:first-child{border-left:none}
+  .theme-seg button.on{background:var(--accent);color:#fff}
+  header h1{margin:0 0 4px;font-size:18px}
+  header p{margin:0;color:var(--muted);font-size:13px}
+  .tabs{display:flex;gap:4px;padding:12px 24px 0;flex-wrap:wrap}
+  .tab{padding:8px 16px;border:1px solid var(--border);border-bottom:none;border-radius:8px 8px 0 0;
+       background:var(--panel);color:var(--muted);cursor:pointer;font-size:13px;font-weight:500}
+  .tab.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+  .view{display:none;padding:24px;animation:fade .2s}
+  .view.active{display:block}
+  @keyframes fade{from{opacity:0}to{opacity:1}}
+  .legend{display:flex;gap:16px;margin-bottom:16px;font-size:12px;color:var(--muted);flex-wrap:wrap}
+  .dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px;vertical-align:middle}
+  .dot.done{background:var(--done)} .dot.doing{background:var(--doing)} .dot.todo{background:var(--todo)}
+  code{background:var(--bg);padding:1px 6px;border-radius:5px;font-size:12px}
+
+  /* people badges */
+  .who{font-size:11px;color:var(--muted);margin-top:5px;display:flex;gap:8px;flex-wrap:wrap}
+  .who .wa{color:var(--wa)} .who .wr{color:var(--wr)} .who .ww{color:var(--ww)}
+
+  /* Kanban */
+  .kanban{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+  .kcol{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:12px;min-height:200px}
+  .kcol h3{margin:0 0 12px;font-size:13px;text-transform:uppercase;letter-spacing:.5px;display:flex;justify-content:space-between}
+  .kcol h3 .cnt{color:var(--muted);font-weight:400}
+  .kcard{background:var(--bg);border:1px solid var(--border);border-left:3px solid var(--todo);
+         border-radius:8px;padding:10px 12px;margin-bottom:8px;cursor:pointer;transition:border-color .15s,transform .1s}
+  .kcard:hover{border-color:var(--accent);transform:translateX(2px)}
+  .kcard.done{border-left-color:var(--done)} .kcard.doing{border-left-color:var(--doing)}
+  .kcard .ms{font-size:11px;color:var(--accent);font-weight:600;margin-bottom:3px}
+  .kcard .tid{font-size:11px;color:var(--muted);margin-top:4px}
+  .kcard .tt{font-size:13px}
+  .kcard .dep{font-size:11px;color:var(--doing);margin-top:4px}
+
+  /* Outline tree */
+  .tree{max-width:960px}
+  .mile{background:var(--panel);border:1px solid var(--border);border-radius:12px;margin-bottom:16px;overflow:hidden}
+  .mhead{padding:14px 16px;display:flex;align-items:center;gap:12px;border-bottom:1px solid var(--border);flex-wrap:wrap}
+  .mhead .mname{font-weight:600;font-size:15px}
+  .mhead .mdate{font-size:11px;color:var(--muted)}
+  .mhead .mdep{font-size:11px;color:var(--doing)}
+  .mhead .spacer{flex:1}
+  .pbar{height:6px;background:var(--todo);border-radius:3px;overflow:hidden;width:120px}
+  .pbar > i{display:block;height:100%;background:var(--done)}
+  .pct{font-size:12px;color:var(--muted);width:38px;text-align:right}
+  .trow{padding:9px 16px 9px 40px;display:flex;align-items:flex-start;gap:10px;border-bottom:1px solid var(--border-soft);cursor:pointer}
+  .trow:last-child{border-bottom:none}
+  .trow:hover{background:var(--row-hover)}
+  .trow .tid{font-size:11px;color:var(--muted);min-width:34px;padding-top:1px}
+  .trow .tbody{flex:1}
+  .trow .dep{font-size:11px;color:var(--doing);margin-top:2px}
+  .badge{font-size:10px;padding:2px 8px;border-radius:10px;font-weight:600;text-transform:uppercase;white-space:nowrap}
+  .badge.done{background:var(--bdg-done-bg);color:var(--bdg-done-fg)}
+  .badge.doing,.badge.active{background:var(--bdg-doing-bg);color:var(--bdg-doing-fg)}
+  .badge.todo,.badge.planned{background:var(--bdg-todo-bg);color:var(--bdg-todo-fg)}
+  .badge.blocked{background:var(--bdg-blocked-bg);color:var(--bdg-blocked-fg)}
+
+  /* mermaid wrap */
+  .mermaid{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:20px;text-align:center}
+  .mermaid .task,.mermaid .taskText,.mermaid rect.task{cursor:pointer}
+  .mermaid g[id] .task{cursor:pointer}
+  /* gantt 폰트 대비 */
+  #dep .mermaid .sectionTitle{fill:var(--text) !important;font-weight:600}
+  #dep .mermaid .titleText{fill:var(--text) !important;font-weight:700}
+  #dep .mermaid .grid .tick text{fill:var(--muted) !important}
+  #dep .mermaid .grid path,#dep .mermaid .grid line{stroke:var(--border)}
+  #dep .mermaid .taskText{font-weight:600}
+  /* gantt 스크롤 창 + 툴바 */
+  /* 커스텀 HTML 간트 (schedule 타입) */
+  .sg-toolbar{display:flex;align-items:center;gap:6px;margin-bottom:10px;color:var(--muted);font-size:12px}
+  .sg-toolbar button{background:var(--panel);border:1px solid var(--border);color:var(--text);border-radius:8px;height:28px;min-width:30px;padding:0 10px;font-size:14px;cursor:pointer}
+  .sg-toolbar button:hover{border-color:var(--accent)}
+  .sg-toolbar .zlbl{color:var(--muted);font-size:11px;margin-left:4px}
+  .sg-body{overflow:auto;max-height:70vh;border:1px solid var(--border);border-radius:12px;background:var(--panel);position:relative}
+  .sg-inner{position:relative}
+  .sg-row{display:flex;align-items:center;height:28px;border-bottom:1px solid var(--border-soft)}
+  .sg-row.section{height:26px;background:var(--row-alt)}
+  .sg-row.sg-axis{position:sticky;top:0;z-index:4;height:26px;background:var(--panel);border-bottom:1px solid var(--border)}
+  .sg-label{position:sticky;left:0;z-index:3;width:230px;min-width:230px;height:100%;display:flex;align-items:center;gap:6px;
+    padding:0 10px;background:var(--panel);border-right:1px solid var(--border);font-size:12px;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .sg-row.section .sg-label{font-weight:600}
+  .sg-track{position:relative;height:100%;flex:1}
+  .sg-tick{position:absolute;top:0;height:100%;border-left:1px solid var(--border-soft);padding-left:3px;font-size:10px;color:var(--muted);line-height:26px}
+  .sg-tick.m{border-left-color:var(--border);color:var(--text)}
+  .sg-bar{position:absolute;top:5px;height:18px;border:1px solid;border-radius:5px;font-size:11px;line-height:16px;
+    color:#fff;padding:0 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
+  .sg-bar.done{background:#238636;border-color:#3fb950}
+  .sg-bar.doing{background:#a86e12;border-color:#e3b341}
+  .sg-bar.todo{background:#3d444d;border-color:#6e7681}
+  .sg-bar.blocked{background:#8e2b26;border-color:#e5534b}
+  .sg-bar:hover{filter:brightness(1.15)}
+  .sg-weekend{position:absolute;top:0;bottom:0;background:var(--muted);opacity:.06;z-index:0;pointer-events:none}
+  .sg-today{position:absolute;top:0;width:2px;background:#e5534b;z-index:2;pointer-events:none}
+  /* 오버듀 자동파생(due<today & !done) — blocked(빨간 바)와 분리: 빨간 외곽선+빗금 */
+  .sg-bar.overdue{outline:2px solid #e5534b;outline-offset:-1px;
+    background-image:repeating-linear-gradient(45deg,transparent,transparent 4px,rgba(229,83,75,.35) 4px,rgba(229,83,75,.35) 8px)}
+  .sg-bar.dragging{opacity:.85;box-shadow:0 0 0 2px var(--accent)}
+  .sg-bar.dep-hl{box-shadow:0 0 0 2px var(--accent)}          /* 선택한 바 */
+  .sg-bar.dep-pre{box-shadow:0 0 0 2px var(--doing)}          /* 선행 */
+  .sg-bar.dep-post{box-shadow:0 0 0 2px var(--wa)}            /* 후행 */
+  /* 마일스톤 요약 바 / 다이아몬드(start==end) */
+  .sg-msbar{position:absolute;top:9px;height:8px;border-radius:4px;background:var(--accent);opacity:.5}
+  .sg-msbar-fill{height:100%;border-radius:4px;background:var(--accent);opacity:1}
+  .secpct{color:var(--muted);font-size:11px;font-weight:400}
+  .sg-diamond{position:absolute;top:7px;width:12px;height:12px;background:var(--accent);transform:rotate(45deg)}
+  .sg-drag-tip{position:fixed;z-index:50;background:var(--panel);border:1px solid var(--border);color:var(--text);
+    border-radius:6px;padding:3px 8px;font-size:11px;pointer-events:none;white-space:nowrap;box-shadow:0 4px 12px rgba(0,0,0,.4)}
+  .sg-bar.dep-violation{outline:2px dashed #d9822b;outline-offset:-1px}
+  .sg-toast{position:fixed;left:50%;bottom:32px;transform:translateX(-50%);z-index:60;
+    background:var(--panel);border:1px solid #d9822b;color:var(--text);border-radius:8px;
+    padding:8px 16px;font-size:13px;box-shadow:0 6px 20px rgba(0,0,0,.4);display:none}
+  .kcol.kdrop{outline:2px dashed var(--accent);outline-offset:-4px;border-radius:12px}
+  .kcard[draggable]{cursor:grab}
+  .ctog{cursor:pointer;user-select:none;margin-right:4px;opacity:.7;font-size:11px}
+  .ctog:hover{opacity:1}
+  .filter-host{display:inline-block;padding:8px 24px;font-size:13px;color:var(--muted)}
+  .filter-host select{background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:3px 8px;margin-left:4px}
+  .note{color:var(--muted);font-size:12px;margin-bottom:14px;max-width:820px;line-height:1.6}
+
+  /* ledger dialog */
+  dialog#taskModal{background:var(--panel);color:var(--text);border:1px solid var(--border);
+    border-radius:14px;padding:0;max-width:660px;width:92%;box-shadow:0 20px 60px rgba(0,0,0,.6)}
+  dialog#taskModal::backdrop{background:rgba(0,0,0,.6)}
+  .modalhead{display:flex;justify-content:space-between;align-items:center;padding:16px 20px;border-bottom:1px solid var(--border)}
+  .modalhead .tid{color:var(--accent);font-weight:700;font-size:15px}
+  .modalhead .mns{color:var(--muted);font-size:13px}
+  .mclose{background:none;border:none;color:var(--muted);font-size:18px;cursor:pointer;padding:4px 8px}
+  .mclose:hover{color:var(--text)}
+  .modalname{padding:16px 20px;font-size:15px;line-height:1.5;border-bottom:1px solid var(--border)}
+  .mrow{display:flex;padding:9px 20px;border-bottom:1px solid var(--border-soft);font-size:13px}
+  .mrow:last-child{border-bottom:none}
+  .mrow .mk{width:130px;color:var(--muted);flex-shrink:0}
+  .mrow .mv{flex:1}
+  .miss{color:#e5534b;font-style:italic}
+  .ssotlink{color:var(--accent);text-decoration:none;font-weight:500;border:none;background:none;font:inherit;padding:0;cursor:pointer}
+  .ssotlink:hover{text-decoration:underline}
+  .copybtn{margin-left:8px;background:var(--bg);border:1px solid var(--border);color:var(--muted);
+    border-radius:6px;padding:1px 8px;font-size:11px;cursor:pointer}
+  .copybtn:hover{border-color:var(--accent);color:var(--text)}
+
+  /* 편집 툴바 + 폼 */
+  .editbar{align-items:center;gap:8px;padding:10px 24px;border-bottom:1px solid var(--border);background:var(--panel)}
+  .editbar button{background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:6px 12px;font-size:13px;cursor:pointer}
+  .editbar button:hover{border-color:var(--accent)}
+  .editbar .ebspace{flex:1}
+  .dirty-ind{color:var(--doing);font-size:12px;font-weight:600}
+  .sync-btn{background:var(--accent) !important;color:#fff !important;border-color:var(--accent) !important;font-weight:600}
+  .sync-btn:disabled{opacity:.45;cursor:default}
+  .ext-banner{padding:10px 24px;background:var(--bdg-blocked-bg);color:var(--bdg-blocked-fg);border-bottom:1px solid var(--border);font-size:13px}
+  .ext-banner button{margin-left:8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:2px 10px;cursor:pointer}
+  .fedit{width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:5px 8px;font:inherit;font-size:13px}
+  select.fedit{cursor:pointer}
+  textarea.fedit{resize:vertical}
+  .fhint{color:var(--muted);font-size:11px;margin-left:6px}
+  .modalfoot{display:flex;align-items:center;gap:8px;padding:14px 20px;border-top:1px solid var(--border)}
+  .mbtn{background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:7px 14px;font-size:13px;cursor:pointer}
+  .mbtn:hover{border-color:var(--accent)}
+  .mbtn.primary{background:var(--accent);color:#fff;border-color:var(--accent);font-weight:600}
+  .mbtn.danger{color:var(--bdg-blocked-fg);border-color:var(--bdg-blocked-fg)}
+</style>
+</head><body>
+<header>
+  <div class="theme-seg">
+    <button data-m="system">시스템</button><button data-m="light">라이트</button><button data-m="dark">다크</button>
+  </div>
+  <h1>cairn plan viewer <span id="projname" style="color:var(--muted);font-weight:400;font-size:14px"></span></h1>
+  <p>칸반 · 아웃라인 트리 · 워크트리/브랜치 — 카드/행 클릭 시 원장 상세</p>
+</header>
+<div class="tabs">
+  <div class="tab active" data-v="kanban">① 칸반 (상태별)</div>
+  <div class="tab" data-v="tree">② 아웃라인 트리 + 진행바</div>
+  <div class="tab" data-v="dep" id="tab3">③ 워크트리 / 브랜치</div>
+</div>
+
+<div id="editbar" class="editbar" style="display:none">
+  <button id="btnAddMs">＋ 마일스톤</button>
+  <button id="btnAddTask">＋ 태스크</button>
+  <span class="ebspace"></span>
+  <span id="dirtyInd" class="dirty-ind"></span>
+  <button id="btnSync" class="sync-btn" disabled>싱크(저장)</button>
+</div>
+<div id="extBanner" class="ext-banner" style="display:none">⚠ 디스크가 외부에서 변경됐어요.<button id="btnReload">재로드</button></div>
+<span id="filterHost" class="filter-host"></span>
+
+<div id="kanban" class="view active"></div>
+<div id="tree" class="view"></div>
+<div id="dep" class="view"></div>
+
+<dialog id="taskModal"></dialog>
+
+<script>
+// ==== 원장 데이터 (생성기가 이 블록을 치환) ====
+const plan = {
+  project: "BIZ V6 Realtime Live",
+  milestones: [
+    {id:"ms1", name:"M0 Trigger Prep", status:"done", start:"2026-06-26", end:"2026-06-26", dep:[], tasks:[
+      {id:"t1", s:"done", name:"SSOT: v6 live scope, role map, branch/worktree allocation, tool policy", dep:[], ssot:"/Users/you/Project/Agent/BIZ-Work/BIZ-Agents/.worktrees/v6-realtime-live/.cairn/plan.yaml"},
+      {id:"t2", s:"done", name:"BTS: log-spec-code triangulation checklist", dep:[]},
+      {id:"t3", s:"done", name:"Baton: create isolated V6 worktree before implementation", dep:[]},
+    ]},
+    {id:"ms2", name:"M1 Backend Live Spine", status:"active", start:"2026-06-26", end:"2026-07-02", dep:[], tasks:[
+      {id:"t4",  s:"done",  name:"Gateway: expose existing live SSE events with original and translation partials", dep:[]},
+      {id:"t5",  s:"todo",  name:"Worker: live sentence splitter, polishing, retranslation, final confirmation flow", dep:[]},
+      {id:"t15", s:"doing", name:"STT: GPU Qwen3 short-chunk language enforcement and semantic substitution rejection", dep:[]},
+      {id:"t17", s:"todo",  name:"Gemini cache creation 블로킹 제거: translate_raw 32초 진범", dep:[]},
+    ]},
+    {id:"ms5", name:"V6 LST + Cache/Prompt Architecture", status:"active", start:"2026-07-02", end:"2026-07-03", dep:["ms2"], tasks:[
+      {id:"t23", s:"todo", name:"B3 resolve_cache_path SSOT helper", dep:[]},
+      {id:"t24", s:"todo", name:"B4 padding=base-prompt", dep:["t23"]},
+      {id:"t25", s:"todo", name:"B1 polish node wiring", dep:["t24"]},
+      {id:"t26", s:"todo", name:"Case3 LST", dep:["t25"]},
+    ]},
+  ]
+};
+// ==== 데이터 끝 ====
+
+const SLABEL={done:"완료",doing:"진행중",todo:"대기",blocked:"블록"};
+// 편집 컨텍스트(serve가 주입; 정적 file://·gen엔 없음 → 읽기전용)
+const EDIT=(typeof CAIRN_EDIT!=="undefined")?CAIRN_EDIT:{token:"",baseHash:"",pid:null};
+const CAN_EDIT=!!EDIT.token && (location.protocol==="http:"||location.protocol==="https:");
+let ops=[];                       // 축적된 편집 op 체인지셋(뷰JSON 역매핑 아님 — 원장 필드명/값)
+const STATUS_TASK=["todo","doing","done","blocked"];
+const STATUS_MS=["planned","active","blocked","done"];
+const allTasks=()=>plan.milestones.flatMap(m=>m.tasks.map(t=>({...t,ms:m.id,msName:m.name})));
+function msProgress(m){ const total=(m.tasks||[]).length,
+  done=(m.tasks||[]).filter(t=>t.s==="done"||t.status==="done").length;
+  return {done,total,pct:total?Math.round(done/total*100):0}; }
+function esc(s){return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");}
+function whoLine(t){
+  const p=[];
+  if((t.assignees||[]).length) p.push(`<span class="wa">👤 ${t.assignees.map(esc).join(", ")}</span>`);
+  if((t.reporters||[]).length) p.push(`<span class="wr">✍ ${t.reporters.map(esc).join(", ")}</span>`);
+  if((t.watchers||[]).length)  p.push(`<span class="ww">👁 ${t.watchers.length}</span>`);
+  return p.length?`<div class="who">${p.join("")}</div>`:"";
+}
+document.getElementById("projname").textContent=plan.project||"";
+const SCHED=(plan.type==="schedule");
+let schedRendered=false, depWorkHTML=null, _mql=null;
+
+// ① Kanban
+function renderKanban(){
+  const cols={doing:[],todo:[],done:[],blocked:[]};
+  allTasks().forEach(t=>(cols[t.s]||cols.todo).push(t));
+  const order=[["doing","진행중 (Doing)"],["todo","대기 (Todo)"],["done","완료 (Done)"]];
+  let h='<div class="legend"><span><i class="dot doing"></i>진행중</span><span><i class="dot todo"></i>대기</span><span><i class="dot done"></i>완료</span><span>카드 클릭 → 원장 상세</span></div><div class="kanban">';
+  for(const [key,title] of order){
+    const list=cols[key].concat(key==="todo"?cols.blocked:[]);
+    h+=`<div class="kcol" data-col="${key}"><h3>${title}<span class="cnt">${list.length}</span></h3>`;
+    list.forEach(t=>{
+      const dep=t.dep&&t.dep.length?`<div class="dep">⟵ ${t.dep.join(", ")}</div>`:"";
+      h+=`<div class="kcard ${t.s}" data-tid="${t.id}"${CAN_EDIT?' draggable="true"':''}><div class="ms">${t.ms} · ${esc(t.msName)}</div>`+
+         `<div class="tt">${esc(t.name)}</div>${whoLine(t)}<div class="tid">${t.id} ›</div>${dep}</div>`;
+    });
+    h+="</div>";
+  }
+  document.getElementById("kanban").innerHTML=h+"</div>";
+  wireKanbanDrag();
+}
+// 칸반 카드 컬럼 간 드래그 = status 변경(간트 드래그와 동일 set op 인프라)
+function wireKanbanDrag(){
+  if(!CAN_EDIT)return;
+  const root=document.getElementById("kanban"); if(!root)return;
+  root.querySelectorAll(".kcard[draggable]").forEach(c=>{
+    c.addEventListener("dragstart",e=>{ e.dataTransfer.setData("text/plain",c.dataset.tid); c.style.opacity=".5"; });
+    c.addEventListener("dragend",()=>{ c.style.opacity=""; });
+  });
+  root.querySelectorAll("[data-col]").forEach(col=>{
+    col.addEventListener("dragover",e=>{ e.preventDefault(); col.classList.add("kdrop"); });
+    col.addEventListener("dragleave",()=>col.classList.remove("kdrop"));
+    col.addEventListener("drop",e=>{ e.preventDefault(); col.classList.remove("kdrop");
+      const tid=e.dataTransfer.getData("text/plain"), t=TASKMAP[tid], ns=col.dataset.col;
+      if(!t||t.s===ns)return;
+      pushSet(t,"status",ns); t.s=ns;
+      markDirty(); renderAll(); refreshSchedIfActive();
+    });
+  });
+}
+
+// ② Outline tree
+function renderTree(){
+  let h='<div class="note">프로젝트 › 마일스톤 › 태스크 계층. 마일스톤마다 완료율 진행바 · 일정 · 의존. 사람(👤작업자 ✍보고자 👁관찰자) 표기.</div><div class="tree">';
+  plan.milestones.forEach(m=>{
+    const done=m.tasks.filter(t=>t.s==="done").length, tot=m.tasks.length;
+    const pct=tot?Math.round(done/tot*100):0;
+    const mstat=m.status==='done'?'done':m.status==='active'?'active':m.status==='blocked'?'blocked':'planned';
+    const dates=(m.start||m.end)?`<span class="mdate">📅 ${m.start||"—"} ~ ${m.end||"—"}</span>`:"";
+    const mdep=m.dep&&m.dep.length?`<span class="mdep">⟵ ${m.dep.join(", ")}</span>`:"";
+    h+=`<div class="mile"><div class="mhead" data-mid="${m.id}"><span class="ctog" data-tog="${m.id}">${collapsed.has(m.id)?'▸':'▾'}</span><span class="badge ${mstat}">${m.id}</span>`+
+       `<span class="mname">${esc(m.name)}</span>${dates}${mdep}`+
+       `<span class="spacer"></span><div class="pbar"><i style="width:${pct}%"></i></div><span class="pct">${pct}%</span></div>`;
+    if(!collapsed.has(m.id)) m.tasks.forEach(t=>{
+      const dep=t.dep&&t.dep.length?`<div class="dep">⟵ 선행: ${t.dep.join(", ")}</div>`:"";
+      h+=`<div class="trow" data-tid="${t.id}"><span class="tid">${t.id}</span>`+
+         `<div class="tbody">${esc(t.name)}${whoLine(t)}${dep}</div>`+
+         `<span class="badge ${t.s}">${SLABEL[t.s]||t.s}</span></div>`;
+    });
+    h+="</div>";
+  });
+  document.getElementById("tree").innerHTML=h+"</div>";
+}
+
+// ③ 타입 분기: schedule=간트(일정) / work=워크트리·브랜치(gitGraph)
+function renderDepTab(){
+  const tab3=document.getElementById("tab3");
+  if(SCHED){
+    tab3.textContent="③ 간트 (일정)";
+    return;   // 렌더는 탭 최초 표시 때 지연 실행(하단 함수·const 초기화 후)
+  }
+  // work 타입 — 워크트리/브랜치 gitGraph
+  tab3.textContent="③ 워크트리 / 브랜치";
+  const short=t=>{const n=t.name.split(/[:：]/)[0].trim();return (n.length>14?n.slice(0,13)+"…":n);};
+  const FEAT=plan.branch||"feat/"+ (plan.project||"project").toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"");
+  // mermaid gitGraph 기본 브랜치는 이미 main — plan.branch가 main/master면 재생성(branch "main")이
+  // 신택스 에러. 이 경우 기본 브랜치를 그대로 쓰고 별도 feature 브랜치를 만들지 않는다.
+  const isMain=(FEAT==="main"||FEAT==="master");
+  let g="gitGraph\n";
+  g+=`  commit id:"init"\n`;
+  if(!isMain) g+=`  branch "${FEAT}"\n  checkout "${FEAT}"\n  commit id:"worktree 생성"\n`;
+  plan.milestones.forEach(m=>{
+    g+=`  branch "${m.id}"\n  checkout "${m.id}"\n`;   // id 따옴표 — 하이픈/특수문자 안전
+    m.tasks.forEach(t=>{
+      const lbl=`${t.id} ${short(t)}`;
+      if(t.s==="done")       g+=`  commit id:"${lbl}" tag:"✓"\n`;
+      else if(t.s==="doing") g+=`  commit id:"${lbl}" type:HIGHLIGHT\n`;
+      else                   g+=`  commit id:"${lbl}" type:REVERSE\n`;
+    });
+    g+=`  checkout "${FEAT}"\n`;   // isMain이면 FEAT="main" → 기본 브랜치로 체크아웃(존재)
+    if(m.status==="done") g+=`  merge "${m.id}" tag:"${m.id} merged"\n`;
+  });
+  const depNote=plan.milestones.filter(m=>m.dep&&m.dep.length).map(m=>`${m.id} ⟵ ${m.dep.join("+")}`).join(" · ");
+  document.getElementById("dep").innerHTML=
+    '<div class="note">작업 타입: <code>execution_ref/branch</code> 기반 브랜치 토폴로지(cairn <code>map</code>의 recovery-graph). 각 마일스톤이 브랜치로 fan-out, 완료(done)만 feature 브랜치로 merge. '+
+    '<span style="color:var(--doing)">✓=완료 커밋 · 강조노드=진행중 · 역노드=대기</span></div>'+
+    (depNote?`<div class="legend"><span>마일스톤 의존: ${depNote} (gitGraph 단일부모 한계로 텍스트 표기)</span></div>`:"")+
+    `<pre class="mermaid">${g}</pre>`;
+  depWorkHTML=document.getElementById("dep").innerHTML;   // 테마 전환 시 재렌더용 원본
+}
+
+// 최초 렌더 + 재렌더 진입점(편집 저장 후 reloadView가 재호출)
+let TASKMAP={};
+function rebuildTaskMap(){ TASKMAP=Object.fromEntries(allTasks().map(t=>[t.id,t])); }
+const collapsed=new Set();   // 접힌 마일스톤 id(세션 메모리)
+function toggleCollapse(mid){ collapsed.has(mid)?collapsed.delete(mid):collapsed.add(mid); renderAll(); refreshSchedIfActive(); }
+function renderAll(){ rebuildTaskMap(); renderKanban(); renderTree(); renderDepTab(); applyFilter(); }
+// 담당자 필터 — 비매칭 태스크 흐림(스윔레인 아님, assignee 매칭). 전 뷰 공통, 표시만.
+let assigneeFilter=null;
+function applyFilter(){
+  const match=t=>!assigneeFilter||(t.assignees||[]).includes(assigneeFilter);
+  document.querySelectorAll("[data-tid]").forEach(el=>{
+    const t=TASKMAP[el.dataset.tid]; el.style.opacity=(t&&!match(t))?".25":"";
+  });
+}
+function buildFilterUI(){
+  const host=document.getElementById("filterHost"); if(!host)return;
+  const people=[...new Set(allTasks().flatMap(t=>t.assignees||[]))].sort();
+  host.innerHTML=`담당자 <select id="fAssignee"><option value="">전체</option>`+
+    people.map(p=>`<option value="${_av(p)}">${esc(p)}</option>`).join("")+`</select>`;
+  document.getElementById("fAssignee").onchange=e=>{ assigneeFilter=e.target.value||null; applyFilter(); };
+}
+renderAll();
+
+// ==== 원장 다이얼로그 ====
+const dlg=document.getElementById("taskModal");
+const _av=v=>(v==null?"":String(v)).replace(/&/g,"&amp;").replace(/"/g,"&quot;");
+function openTask(tid){
+  const t=TASKMAP[tid]; if(!t)return;
+  const badge=`<span class="badge ${t.s}">${SLABEL[t.s]||t.s}</span>`;
+  const row=(k,v)=>`<div class="mrow"><span class="mk">${k}</span><span class="mv">${v}</span></div>`;
+  const empty=`<span class="miss">미기록 (원장 빈 값 — link 훅 필요)</span>`;
+  const roE=` <span class="fhint">읽기전용(훅 정본)</span>`;
+  let body, foot="";
+  if(!CAN_EDIT){
+    // 읽기전용(정적 file:// · 서버 아님)
+    const nameList=a=>(a&&a.length)?a.map(esc).join(", "):"<span class='miss'>없음</span>";
+    const dep=t.dep&&t.dep.length?t.dep.map(d=>`<code>${d}</code>`).join(", "):"<span class='miss'>없음</span>";
+    const ssot=t.ssot
+      ? `<button class="ssotlink" data-open="${_av(t.ssot)}" title="${_av(t.ssot)}">📄 ${esc(t.ssot.split("/").pop())} 열기</button>`+
+        `<button class="copybtn" data-copy="${_av(t.ssot)}">경로 복사</button>`
+      : "<span class='miss'>미지정</span>";
+    body=row("상태",badge)+row("작업자 👤",nameList(t.assignees))+row("보고자 ✍",nameList(t.reporters))
+       +row("관찰자 👁",nameList(t.watchers))+row("선행(depends_on)",dep)+row("기획 SSOT",ssot)
+       +row("execution_ref",t.exec?`<code>${t.exec}</code>`:empty)+row("branch",t.branch?`<code>${t.branch}</code>`:empty)
+       +row("start / due",`${t.start||"—"} / ${t.due||"—"}`)+(t.note?row("note",esc(t.note)):"");
+  }else{
+    const inp=(id,v,type)=>`<input class="fedit" id="${id}" type="${type||'text'}" value="${_av(v)}">`;
+    const opt=STATUS_TASK.map(s=>`<option value="${s}"${s===t.s?' selected':''}>${SLABEL[s]}</option>`).join("");
+    const ssotOpen=t.ssot?` <button class="ssotlink" data-open="${_av(t.ssot)}">📄 열기</button>`:"";
+    body=row("상태",`<select class="fedit" id="f_status">${opt}</select>`)
+       +row("이름",inp("f_name",t.name))
+       +row("작업자 👤",inp("f_assignees",(t.assignees||[]).join(", "))+`<span class="fhint">쉼표 구분</span>`)
+       +row("보고자 ✍",inp("f_reporters",(t.reporters||[]).join(", ")))
+       +row("관찰자 👁",inp("f_watchers",(t.watchers||[]).join(", ")))
+       +row("선행(depends_on)",inp("f_dep",(t.dep||[]).join(", "))+`<span class="fhint">쉼표 구분 task id</span>`)
+       +row("기획 SSOT",inp("f_ssot",t.ssot||"")+ssotOpen)
+       +row("execution_ref",(t.exec?`<code>${t.exec}</code>`:empty)+roE)
+       +row("branch",(t.branch?`<code>${t.branch}</code>`:empty)+roE)
+       +row("start",inp("f_start",t.start||"","date"))
+       +row("due",inp("f_due",t.due||"","date"))
+       +row("note",`<textarea class="fedit" id="f_note" rows="2">${esc(t.note||"")}</textarea>`);
+    foot=`<div class="modalfoot"><button class="mbtn danger" id="f_del">태스크 삭제</button>`+
+         `<span style="flex:1"></span><button class="mbtn" data-close="1">취소</button>`+
+         `<button class="mbtn primary" id="f_save">확인</button></div>`;
+  }
+  dlg.innerHTML=
+    `<div class="modalhead"><div><span class="tid">${t.id}</span> · <span class="mns">${t.ms} ${esc(t.msName)}</span></div>`+
+    `<button class="mclose" data-close="1">✕</button></div>`+
+    `<div class="modalname">${esc(t.name)} ${badge}</div>`+body+foot;
+  dlg._task=t;
+  dlg.showModal();
+}
+function openSsot(path){
+  if(location.protocol.startsWith("http")){
+    fetch("/open?t="+encodeURIComponent(EDIT.token),{method:"POST",
+      headers:{"Content-Type":"application/json"},body:JSON.stringify({path})})
+      .then(r=>{if(!r.ok)throw 0;}).catch(()=>{
+        navigator.clipboard?.writeText(path); alert("열기 실패 — 경로를 복사했어요:\n"+path);});
+  } else {
+    navigator.clipboard?.writeText(path);
+    alert("브라우저 보안상 file:// 직접 열기는 막혀 있어요.\n서버 모드(cairn render --serve)에서 열립니다.\n경로를 클립보드에 복사했어요:\n"+path);
+  }
+}
+// 편집 op 축적 + 로컬 뷰 미러 갱신(저장은 싱크 버튼 → /save transaction)
+function pushSet(t,field,value){ ops.push({op:"set",target:[EDIT.pid,t.ms,t.id],field,value}); }
+function saveTaskForm(){
+  const t=dlg._task; if(!t)return;
+  const g=id=>dlg.querySelector(id);
+  const name=g("#f_name").value.trim();
+  if(name && name!==t.name){ pushSet(t,"name",name); t.name=name; }
+  const st=g("#f_status").value;
+  if(st!==t.s){ pushSet(t,"status",st); t.s=st; }
+  const setOpt=(field,viewKey,raw)=>{
+    const cur=t[viewKey]||""; const nv=(raw||"").trim();
+    if(nv!==cur){ pushSet(t,field,nv); if(nv)t[viewKey]=nv; else delete t[viewKey]; }
+  };
+  setOpt("start","start",g("#f_start").value);
+  setOpt("due","due",g("#f_due").value);
+  setOpt("note","note",g("#f_note").value);
+  setOpt("ssot","ssot",g("#f_ssot").value);
+  const setArr=(field,viewKey)=>{
+    const cur=(t[viewKey]||[]).join(", ");
+    const nv=g("#f_"+field).value;
+    if(nv.trim()!==cur.trim()){
+      const arr=nv.split(",").map(s=>s.trim()).filter(Boolean);
+      pushSet(t,field==="dep"?"depends_on":field,arr); t[viewKey]=arr;
+    }
+  };
+  setArr("assignees","assignees"); setArr("reporters","reporters"); setArr("watchers","watchers");
+  setArr("dep","dep");
+  markDirty(); dlg.close(); renderAll(); refreshSchedIfActive();
+}
+function deleteTask(){
+  const t=dlg._task; if(!t)return;
+  if(!confirm(`태스크 ${t.id} 삭제? (역참조 중이면 싱크 시 거부됩니다)`))return;
+  ops.push({op:"remove-task",target:[EDIT.pid,t.ms,t.id]});
+  const m=plan.milestones.find(x=>x.id===t.ms);
+  if(m) m.tasks=m.tasks.filter(x=>x.id!==t.id);
+  markDirty(); dlg.close(); renderAll(); refreshSchedIfActive();
+}
+// 마일스톤 필드편집 다이얼로그 — set-ms/remove-milestone op(백엔드 기존)
+function openMilestone(mid){
+  const m=plan.milestones.find(x=>x.id===mid); if(!m)return;
+  if(!CAN_EDIT) return;   // 읽기전용: MS 편집 UI 없음
+  const row=(k,v)=>`<div class="mrow"><span class="mk">${k}</span><span class="mv">${v}</span></div>`;
+  const inp=(id,v,type)=>`<input class="fedit" id="${id}" type="${type||'text'}" value="${_av(v)}">`;
+  const opt=STATUS_MS.map(s=>`<option value="${s}"${s===m.status?' selected':''}>${s}</option>`).join("");
+  const empty=(m.tasks||[]).length===0;
+  const body=row("상태",`<select class="fedit" id="m_status">${opt}</select>`)
+    +row("이름",inp("m_name",m.name))
+    +row("start",inp("m_start",m.start||"","date"))
+    +row("end",inp("m_end",m.end||"","date"))
+    +row("선행(depends_on)",inp("m_dep",(m.dep||m.depends_on||[]).join(", "))+`<span class="fhint">쉼표 구분 ms id</span>`);
+  const foot=`<div class="modalfoot">`+
+    (empty?`<button class="mbtn danger" id="m_del">마일스톤 삭제</button>`:`<span class="fhint">태스크가 있어 삭제 불가</span>`)+
+    `<span style="flex:1"></span><button class="mbtn" data-close="1">취소</button><button class="mbtn primary" id="m_save">확인</button></div>`;
+  dlg.innerHTML=`<div class="modalhead"><div><span class="tid">${m.id}</span> · 마일스톤</div>`+
+    `<button class="mclose" data-close="1">✕</button></div><div class="modalname">${esc(m.name)}</div>`+body+foot;
+  dlg._ms=m; dlg._task=null; dlg.showModal();
+}
+function saveMsForm(){
+  const m=dlg._ms; if(!m)return; const g=id=>dlg.querySelector(id);
+  const pushMs=(field,value)=>ops.push({op:"set-ms",target:[EDIT.pid,m.id],field,value});
+  const name=g("#m_name").value.trim(); if(name&&name!==m.name){ pushMs("name",name); m.name=name; }
+  const st=g("#m_status").value; if(st!==m.status){ pushMs("status",st); m.status=st; }
+  const setOpt=(field,key,raw)=>{ const cur=m[key]||"", nv=(raw||"").trim();
+    if(nv!==cur){ pushMs(field,nv); if(nv)m[key]=nv; else delete m[key]; } };
+  setOpt("start","start",g("#m_start").value); setOpt("end","end",g("#m_end").value);
+  const depCur=(m.dep||m.depends_on||[]).join(", "), depNv=g("#m_dep").value;
+  if(depNv.trim()!==depCur.trim()){ const arr=depNv.split(",").map(s=>s.trim()).filter(Boolean);
+    pushMs("depends_on",arr); m.dep=arr; }
+  markDirty(); dlg.close(); renderAll(); refreshSchedIfActive();
+}
+function deleteMilestone(){
+  const m=dlg._ms; if(!m)return;
+  if((m.tasks||[]).length){ alert("태스크가 있어 삭제할 수 없습니다"); return; }
+  if(!confirm(`마일스톤 ${m.id} 삭제?`))return;
+  ops.push({op:"remove-milestone",target:[EDIT.pid,m.id]});
+  plan.milestones=plan.milestones.filter(x=>x.id!==m.id);
+  markDirty(); dlg.close(); renderAll(); refreshSchedIfActive();
+}
+dlg.addEventListener("click",e=>{
+  if(e.target.id==="f_save"){ saveTaskForm(); return; }
+  if(e.target.id==="f_del"){ deleteTask(); return; }
+  if(e.target.id==="m_save"){ saveMsForm(); return; }
+  if(e.target.id==="m_del"){ deleteMilestone(); return; }
+  if(e.target===dlg || e.target.dataset.close){ dlg.close(); return; }
+  if(e.target.dataset.open){ openSsot(e.target.dataset.open); return; }
+  if(e.target.dataset.copy){
+    navigator.clipboard?.writeText(e.target.dataset.copy);
+    e.target.textContent="복사됨 ✓"; setTimeout(()=>e.target.textContent="경로 복사",1200);
+  }
+});
+document.body.addEventListener("click",e=>{
+  if(_dragMoved){ _dragMoved=false; return; }   // 드래그 종료 후 click은 다이얼로그 억제
+  const tog=e.target.closest("[data-tog]");
+  if(tog){ toggleCollapse(tog.dataset.tog); return; }
+  if(e.target.closest("dialog"))return;
+  const el=e.target.closest("[data-tid]");
+  if(el){ openTask(el.dataset.tid); return; }
+  const mel=e.target.closest("[data-mid]");
+  if(mel) openMilestone(mel.dataset.mid);
+});
+
+// tabs + lazy mermaid
+window.openTask=openTask;   // mermaid gantt click 콜백에서 참조
+const MMCFG={
+  startOnLoad:false, securityLevel:"loose",
+  themeVariables:{
+    fontSize:"13px",
+    // gantt 바 (디자인 시스템 매핑, 대비 확보)
+    taskBkgColor:"#3d444d", taskBorderColor:"#6e7681",
+    activeTaskBkgColor:"#a86e12", activeTaskBorderColor:"#e3b341",
+    doneTaskBkgColor:"#238636", doneTaskBorderColor:"#3fb950",
+    critBkgColor:"#8e2b26", critBorderColor:"#e5534b",
+    taskTextColor:"#ffffff", taskTextOutsideColor:"#e6edf3",
+    taskTextDarkColor:"#ffffff", taskTextLightColor:"#ffffff", taskTextClickableColor:"#79c0ff",
+    sectionBkgColor:"rgba(255,255,255,0.03)", sectionBkgColor2:"rgba(255,255,255,0.05)",
+    altSectionBkgColor:"rgba(0,0,0,0)",
+    gridColor:"#30363d", todayLineColor:"#e5534b", titleColor:"#e6edf3",
+  },
+  gantt:{useMaxWidth:false, barHeight:20, barGap:4, topPadding:40, leftPadding:120},
+  flowchart:{nodeSpacing:30,rankSpacing:50},
+};
+function applyTheme(mode){
+  localStorage.setItem("cairnTheme",mode);
+  const dark = mode==="dark" || (mode!=="light" && matchMedia("(prefers-color-scheme:dark)").matches);
+  document.documentElement.setAttribute("data-theme", dark?"dark":"light");
+  document.querySelectorAll(".theme-seg button").forEach(b=>b.classList.toggle("on", b.dataset.m===mode));
+  mermaid.initialize({...MMCFG, theme: dark?"dark":"default"});
+  if(!SCHED && depWorkHTML){   // gitGraph 새 테마로 재렌더
+    const d=document.getElementById("dep"); d.innerHTML=depWorkHTML; rendered.dep=false;
+    if(d.classList.contains("active")) renderMermaid("dep");
+  }
+  if(_mql){ _mql.onchange=null; _mql=null; }
+  if(mode==="system"){ _mql=matchMedia("(prefers-color-scheme:dark)"); _mql.onchange=()=>applyTheme("system"); }
+}
+const rendered={};
+async function renderMermaid(view){
+  if(rendered[view])return;
+  const el=document.querySelector(`#${view} .mermaid`);
+  if(el){ await mermaid.run({nodes:[el]}); rendered[view]=true; }
+}
+// ==== 커스텀 HTML 간트 (mermaid 아님 — 줌/마스크/오늘중앙 완전 통제) ====
+const SG={px:14, min:null};              // px = 하루당 픽셀(줌 레벨)
+const LABELW=230;
+const dcount=(a,b)=>Math.round((b-a)/86400000);
+const _today=()=>{const d=new Date();d.setHours(0,0,0,0);return d;};
+function isOverdue(t){ return !!(t.due && t.s!=="done" && new Date(t.due)<_today()); }
+const _addDays=(iso,n)=>{const x=new Date(iso);x.setDate(x.getDate()+n);
+  return `${x.getFullYear()}-${String(x.getMonth()+1).padStart(2,"0")}-${String(x.getDate()).padStart(2,"0")}`;};
+function scheduleBounds(){
+  const ds=[];
+  plan.milestones.forEach(m=>{
+    [m.start,m.end].forEach(x=>x&&ds.push(+new Date(x)));
+    m.tasks.forEach(t=>[t.start,t.due].forEach(x=>x&&ds.push(+new Date(x))));
+  });
+  const min=new Date(Math.min(...ds)), max=new Date(Math.max(...ds));
+  min.setDate(min.getDate()-3); max.setDate(max.getDate()+4);   // 좌우 여백
+  min.setDate(min.getDate()-((min.getDay()+6)%7));              // 월요일로 내림 정렬(주말 음영 전제·틱 요일 고정)
+  return {min, max, days:dcount(min,max)+1};
+}
+function renderSchedule(){
+  const {min,max,days}=scheduleBounds(); SG.min=min;
+  const PX=SG.px, trackW=days*PX, innerW=LABELW+trackW;
+  const dayX=d=>dcount(min,new Date(d))*PX;
+  let ticks="";
+  for(let i=0;i<=days;i+=7){
+    const d=new Date(min); d.setDate(d.getDate()+i);
+    const isMonth=d.getDate()<=7;   // min이 월요일이라 틱은 항상 월요일
+    ticks+=`<div class="sg-tick${isMonth?' m':''}" style="left:${i*PX}px">${d.getMonth()+1}/${d.getDate()}</div>`;
+  }
+  let weekends="";   // min이 월요일 → 토=+5, 일=+6. sg-inner 레벨 세로 음영(LABELW 오프셋)
+  for(let i=0;i<=days;i+=7){
+    weekends+=`<div class="sg-weekend" style="left:${LABELW+(i+5)*PX}px;width:${2*PX}px"></div>`;
+  }
+  let rows="";
+  plan.milestones.forEach(m=>{
+    const mstat=m.status==='done'?'done':m.status==='active'?'doing':m.status==='blocked'?'blocked':'todo';
+    // 마일스톤 요약: start~end 요약 바(start==end면 다이아몬드)
+    const pr=msProgress(m);
+    let msMark="";
+    if(m.start){
+      const e=m.end||m.start, l=dayX(m.start);
+      if(m.start===e) msMark=`<div class="sg-diamond" style="left:${l-6}px" title="${esc(m.name)} ${m.start}"></div>`;
+      else msMark=`<div class="sg-msbar" style="left:${l}px;width:${(dcount(new Date(m.start),new Date(e))+1)*PX}px" title="${esc(m.name)} ${m.start}~${e} · ${pr.done}/${pr.total}"><div class="sg-msbar-fill" style="width:${pr.pct}%"></div></div>`;
+    }
+    rows+=`<div class="sg-row section" data-mid="${m.id}"><div class="sg-label sec"><span class="ctog" data-tog="${m.id}">${collapsed.has(m.id)?'▸':'▾'}</span><span class="badge ${mstat}">${m.id}</span> ${esc(m.name)} <span class="secpct">(${pr.done}/${pr.total})</span></div><div class="sg-track">${msMark}</div></div>`;
+    if(!collapsed.has(m.id)) m.tasks.forEach(t=>{
+      const s=t.start||m.start, e=t.due||m.end||s;
+      const left=dayX(s), w=Math.max(PX,(dcount(new Date(s),new Date(e))+1)*PX);
+      const who=(t.assignees||[]).length?" · 👤"+t.assignees.join(","):"";
+      const od=isOverdue(t)?" overdue":"";
+      rows+=`<div class="sg-row" data-tid="${t.id}"><div class="sg-label" title="${esc(t.name)}">${t.id} ${esc(t.name)}</div>`+
+            `<div class="sg-track"><div class="sg-bar ${t.s}${od}" style="left:${left}px;width:${w}px" title="${esc(t.name)}${who}${od?' · ⚠마감초과':''}">${esc(t.name)}</div></div></div>`;
+    });
+  });
+  const todayLeft=LABELW+dcount(min,new Date())*PX;
+  const editNote=CAN_EDIT?' 바를 드래그하면 이동(양끝=기간 조절, 일 단위 스냅) → 싱크로 저장.':'';
+  document.getElementById("dep").innerHTML=
+    '<div class="note">일정관리 타입: 실제 기간 기반 간트. 좌측 라벨 고정 · 타임라인만 마스킹 스크롤 · 확대/축소로 시간축 밀도 조절. 빨간선=오늘. 바 클릭 → 원장. 바에 호버 → 의존 강조.'+editNote+'</div>'+
+    '<div class="legend"><span><i class="dot done"></i>완료</span><span><i class="dot doing"></i>진행중</span><span><i class="dot todo"></i>대기</span><span style="color:#e5534b">■ 블록(막힘)</span><span style="color:#e5534b">▨ 마감초과(overdue)</span><span style="color:var(--doing)">▢ 선행</span><span style="color:var(--wa)">▢ 후행</span></div>'+
+    '<div class="sg-toolbar"><button id="gZoomOut" title="축소">－</button><button id="gZoomIn" title="확대">＋</button>'+
+      '<button id="gFit" title="전체 맞춤">맞춤</button><button id="gWk">주</button><button id="gMo">월</button><button id="gQt">분기</button>'+
+      `<span id="gZoomLbl" class="zlbl"></span><span style="flex:1"></span>`+
+      '<button id="gPrev" title="반칸 왼쪽">‹</button><button id="gToday">오늘</button><button id="gNext" title="반칸 오른쪽">›</button></div>'+
+    `<div class="sg-body" id="ganttscroll"><div class="sg-inner" style="width:${innerW}px">`+
+      weekends+
+      `<div class="sg-row sg-axis"><div class="sg-label sec"></div><div class="sg-track" style="width:${trackW}px">${ticks}</div></div>`+
+      rows+
+      `<div class="sg-today" id="sgToday" style="left:${todayLeft}px"></div>`+
+    `</div></div>`;
+  document.getElementById("gZoomLbl").textContent=PX+" px/일";
+  wireSchedule();
+  markViolations();
+}
+// 의존 위반 soft-warn — 클라 계산·표시 전용(원장 validate 무호출). 선행 due > 이 task start.
+function computeViolations(){
+  const v=new Set(), byId={}; allTasks().forEach(t=>byId[t.id]=t);
+  allTasks().forEach(t=>{
+    const s=t.start; if(!s)return;
+    (t.dep||[]).forEach(pid=>{ const p=byId[pid];
+      if(p&&p.due&&new Date(p.due)>new Date(s)) v.add(t.id); });
+  });
+  return v;
+}
+function markViolations(){
+  const sc=document.getElementById("ganttscroll"); if(!sc)return new Set();
+  sc.querySelectorAll(".sg-bar.dep-violation").forEach(b=>b.classList.remove("dep-violation"));
+  const v=computeViolations();
+  v.forEach(tid=>{ const r=sc.querySelector(`.sg-row[data-tid="${tid}"]`);
+    const b=r&&r.querySelector(".sg-bar"); if(b)b.classList.add("dep-violation"); });
+  return v;
+}
+function toast(msg){
+  let t=document.getElementById("sgToast");
+  if(!t){t=document.createElement("div");t.id="sgToast";t.className="sg-toast";document.body.appendChild(t);}
+  t.textContent=msg; t.style.display="block"; clearTimeout(t._t);
+  t._t=setTimeout(()=>{t.style.display="none";},3000);
+}
+function _clearDepHl(scroll){ scroll.querySelectorAll(".sg-bar.dep-hl,.sg-bar.dep-pre,.sg-bar.dep-post")
+  .forEach(b=>b.classList.remove("dep-hl","dep-pre","dep-post")); }
+function _barOf(scroll,tid){ const r=scroll.querySelector(`.sg-row[data-tid="${tid}"]`); return r&&r.querySelector(".sg-bar"); }
+let _dragMoved=false;
+function _centerDate(){   // 현재 뷰포트 중앙의 날짜(줌 앵커)
+  const sc=document.getElementById("ganttscroll"); if(!sc||!SG.min)return null;
+  const centerX=sc.scrollLeft+sc.clientWidth/2-LABELW;
+  const d=new Date(SG.min); d.setDate(d.getDate()+Math.round(centerX/SG.px)); return d;
+}
+function zoomTo(px){
+  const anchor=_centerDate();
+  SG.px=Math.max(2,Math.min(60,px)); renderSchedule(); fixupSchedule();
+  if(anchor){ const sc=document.getElementById("ganttscroll");
+    sc.scrollLeft=LABELW+dcount(SG.min,anchor)*SG.px-sc.clientWidth/2; }
+}
+function fitZoom(){ const {days}=scheduleBounds(); const sc=document.getElementById("ganttscroll");
+  if(sc) zoomTo(Math.floor((sc.clientWidth-LABELW)/Math.max(1,days))); }
+function wireSchedule(){
+  const scroll=document.getElementById("ganttscroll"); if(!scroll)return;
+  const half=()=>scroll.clientWidth/2;
+  document.getElementById("gPrev").onclick=()=>scroll.scrollBy({left:-half(),behavior:"smooth"});
+  document.getElementById("gNext").onclick=()=>scroll.scrollBy({left:half(),behavior:"smooth"});
+  document.getElementById("gToday").onclick=()=>centerToday("smooth");
+  document.getElementById("gZoomIn").onclick=()=>zoomTo(SG.px+6);
+  document.getElementById("gZoomOut").onclick=()=>zoomTo(SG.px-6);
+  document.getElementById("gFit").onclick=fitZoom;
+  document.getElementById("gWk").onclick=()=>zoomTo(28);
+  document.getElementById("gMo").onclick=()=>zoomTo(10);
+  document.getElementById("gQt").onclick=()=>zoomTo(5);
+  // 의존 하이라이트(바 호버 → 선행/후행 테두리 강조)
+  scroll.addEventListener("mouseover",e=>{
+    const bar=e.target.closest(".sg-bar"); _clearDepHl(scroll);
+    if(!bar)return;
+    const row=bar.closest(".sg-row"), tid=row&&row.dataset.tid; if(!tid)return;
+    const t=TASKMAP[tid]; if(!t)return;
+    bar.classList.add("dep-hl");
+    (t.dep||[]).forEach(d=>{const b=_barOf(scroll,d); if(b)b.classList.add("dep-pre");});
+    allTasks().forEach(x=>{ if((x.dep||[]).includes(tid)){const b=_barOf(scroll,x.id); if(b)b.classList.add("dep-post");} });
+  });
+  scroll.addEventListener("mouseleave",()=>_clearDepHl(scroll));
+  if(CAN_EDIT && SCHED) wireDrag(scroll);
+}
+function wireDrag(scroll){
+  let drag=null;
+  const tip=()=>document.getElementById("sgDragTip");
+  scroll.addEventListener("mousedown",e=>{
+    const bar=e.target.closest(".sg-bar"); if(!bar)return;
+    const row=bar.closest(".sg-row"), tid=row&&row.dataset.tid; if(!tid)return;
+    const t=TASKMAP[tid]; if(!t)return;
+    const m=plan.milestones.find(x=>x.id===t.ms)||{};
+    const s0=t.start||m.start, e0=t.due||m.end||s0; if(!s0)return;
+    const rect=bar.getBoundingClientRect(), edge=8, near=SG.px>=8;
+    let mode="move";
+    if(near && e.clientX-rect.left<edge) mode="start";
+    else if(near && rect.right-e.clientX<edge) mode="due";
+    drag={t,bar,mode,startX:e.clientX,ol:parseFloat(bar.style.left),ow:parseFloat(bar.style.width),s0,e0,dd:0};
+    _dragMoved=false; e.preventDefault();
+  });
+  window.addEventListener("mousemove",e=>{
+    if(!drag)return;
+    const dd=Math.round((e.clientX-drag.startX)/SG.px); drag.dd=dd;
+    if(dd!==0)_dragMoved=true;
+    let nl=drag.ol, nw=drag.ow;
+    if(drag.mode==="move") nl=drag.ol+dd*SG.px;
+    else if(drag.mode==="start"){ nl=drag.ol+dd*SG.px; nw=drag.ow-dd*SG.px; }
+    else if(drag.mode==="due") nw=drag.ow+dd*SG.px;
+    if(nw<SG.px)nw=SG.px;
+    drag.bar.style.left=nl+"px"; drag.bar.style.width=nw+"px"; drag.bar.classList.add("dragging");
+    const ns=drag.mode==="due"?drag.s0:_addDays(drag.s0,dd);
+    const ne=drag.mode==="start"?drag.e0:_addDays(drag.e0,dd);
+    let tp=tip(); if(!tp){tp=document.createElement("div");tp.id="sgDragTip";tp.className="sg-drag-tip";document.body.appendChild(tp);}
+    tp.textContent=`${drag.mode==="start"?ns:(drag.mode==="due"?"…~"+ne:ns+" ~ "+ne)}`;
+    tp.style.left=(e.clientX+12)+"px"; tp.style.top=(e.clientY-8)+"px"; tp.style.display="block";
+  });
+  window.addEventListener("mouseup",()=>{
+    if(!drag)return; const d=drag; drag=null;
+    d.bar.classList.remove("dragging"); const tp=tip(); if(tp)tp.style.display="none";
+    if(!_dragMoved)return;   // 이동 없음 = 클릭(다이얼로그는 click 리스너가 처리)
+    const dd=d.dd;
+    const curS=d.t.start||d.s0, curE=d.t.due||d.e0;
+    let ns=curS, ne=curE;
+    if(d.mode==="move"){ ns=_addDays(curS,dd); ne=_addDays(curE,dd); }
+    else if(d.mode==="start") ns=_addDays(curS,dd);
+    else if(d.mode==="due") ne=_addDays(curE,dd);
+    // soft: 의존 위반이어도 저장 허용(현실 일정 조정). validate엔 날짜-의존 검사 없음.
+    if(ns!==curS){ pushSet(d.t,"start",ns); d.t.start=ns; }
+    if(ne!==curE){ pushSet(d.t,"due",ne); d.t.due=ne; }
+    markDirty(); renderSchedule(); fixupSchedule();
+    const v=computeViolations();
+    if(v.has(d.t.id)) toast(`⚠ ${d.t.id}: 선행이 이후에 끝남 — soft(저장은 됩니다)`);
+  });
+}
+function centerToday(behavior){
+  const scroll=document.getElementById("ganttscroll"); if(!scroll||!SG.min)return;
+  const x=LABELW+dcount(SG.min,new Date())*SG.px;
+  scroll.scrollTo({left:Math.max(0,x-scroll.clientWidth/2),behavior:behavior||"auto"});
+}
+function fixupSchedule(){   // 뷰가 보일 때(clientWidth>0) 오늘선 높이 확정 + 오늘 중앙
+  const inner=document.querySelector("#dep .sg-inner"), tl=document.getElementById("sgToday");
+  if(inner&&tl) tl.style.height=inner.scrollHeight+"px";
+  requestAnimationFrame(()=>centerToday("auto"));
+}
+document.querySelectorAll(".tab").forEach(tab=>{
+  tab.onclick=()=>{
+    document.querySelectorAll(".tab").forEach(t=>t.classList.remove("active"));
+    document.querySelectorAll(".view").forEach(v=>v.classList.remove("active"));
+    tab.classList.add("active");
+    document.getElementById(tab.dataset.v).classList.add("active");
+    renderMermaid(tab.dataset.v);
+    if(tab.dataset.v==="dep" && SCHED){ if(!schedRendered){renderSchedule();schedRendered=true;} fixupSchedule(); }
+  };
+});
+
+// ==== 편집 · 싱크 (serve 모드) ====
+function updateSyncUI(){
+  const n=ops.length, b=document.getElementById("btnSync"), d=document.getElementById("dirtyInd");
+  if(b){ b.disabled=n===0; b.textContent=n?`싱크(저장) · ${n}건`:"싱크(저장)"; }
+  if(d){ d.textContent=n?`● 미저장 ${n}건`:""; }
+}
+function markDirty(){ updateSyncUI(); }
+function refreshActiveTab(v){
+  if(v==="dep"){
+    if(SCHED){ schedRendered=false; renderSchedule(); schedRendered=true; fixupSchedule(); }
+    else { rendered.dep=false; renderMermaid("dep"); }
+  }
+  applyFilter();
+}
+function refreshSchedIfActive(){
+  const a=document.querySelector(".tab.active");
+  if(a && a.dataset.v==="dep") refreshActiveTab("dep");
+}
+function reloadView(view){
+  // plan 내용 교체 후 전 뷰 재렌더(브라우저 재로드 없이 연속 편집)
+  plan.milestones=view.milestones; plan.type=view.type; plan.project=view.project;
+  ops=[]; schedRendered=false; rendered.dep=false; depWorkHTML=null;
+  renderAll(); updateSyncUI();
+  const a=document.querySelector(".tab.active");
+  if(a) refreshActiveTab(a.dataset.v);
+}
+async function doSync(){
+  if(!ops.length)return;
+  let res, body;
+  try{
+    res=await fetch("/save?t="+encodeURIComponent(EDIT.token),{method:"POST",
+      headers:{"Content-Type":"application/json"},body:JSON.stringify({ops,baseHash:EDIT.baseHash})});
+    body=await res.json();
+  }catch(e){ alert("네트워크 오류: "+e); return; }
+  if(res.status===409){
+    if(confirm("디스크가 외부에서 변경됐어요. 재로드할까요?\n(현재 미저장 편집은 버려집니다)")){
+      EDIT.baseHash=body.hash; reloadView(body.view);
+      document.getElementById("extBanner").style.display="none";
+    }
+    return;
+  }
+  if(res.status!==200){ alert("저장 실패: "+(body.error||res.status)); return; }
+  EDIT.baseHash=body.hash; reloadView(body.view);
+  const b=document.getElementById("btnSync"); b.textContent="저장됨 ✓"; setTimeout(updateSyncUI,1200);
+}
+function addMilestone(){
+  const name=prompt("새 마일스톤 이름"); if(!name)return;
+  ops.push({op:"add-milestone",target:[EDIT.pid],milestone:{name}});
+  markDirty(); alert("추가 op 축적됨 — 싱크하면 원장에 반영·표시됩니다.");
+}
+function addTask(){
+  const mids=plan.milestones.map(m=>m.id).join(", ");
+  const mid=prompt("어느 마일스톤? id 입력 ("+mids+")"); if(!mid)return;
+  if(!plan.milestones.some(m=>m.id===mid)){ alert("없는 마일스톤 id: "+mid); return; }
+  const name=prompt("새 태스크 이름"); if(!name)return;
+  ops.push({op:"add-task",target:[EDIT.pid,mid],task:{name}});
+  markDirty(); alert("추가 op 축적됨 — 싱크하면 원장에 반영·표시됩니다.");
+}
+async function checkExternal(){
+  if(!CAN_EDIT)return;
+  try{
+    const r=await fetch("/hash?t="+encodeURIComponent(EDIT.token)); const {hash}=await r.json();
+    document.getElementById("extBanner").style.display=(hash!==EDIT.baseHash)?"block":"none";
+  }catch(e){}
+}
+async function reloadExternal(){
+  try{
+    const r=await fetch("/view?t="+encodeURIComponent(EDIT.token)); const {view,hash}=await r.json();
+    if(ops.length && !confirm("미저장 편집이 있어요. 버리고 재로드할까요?"))return;
+    EDIT.baseHash=hash; reloadView(view);
+    document.getElementById("extBanner").style.display="none";
+  }catch(e){}
+}
+function initEdit(){
+  if(!CAN_EDIT)return;
+  document.getElementById("editbar").style.display="flex";
+  document.getElementById("btnSync").onclick=doSync;
+  document.getElementById("btnAddMs").onclick=addMilestone;
+  document.getElementById("btnAddTask").onclick=addTask;
+  document.getElementById("btnReload").onclick=reloadExternal;
+  updateSyncUI();
+  window.addEventListener("beforeunload",e=>{ if(ops.length){ e.preventDefault(); e.returnValue=""; } });
+  document.addEventListener("visibilitychange",()=>{ if(!document.hidden) checkExternal(); });
+}
+initEdit();
+buildFilterUI();
+
+// 테마 (다크/라이트/시스템)
+document.querySelectorAll(".theme-seg button").forEach(b=>b.onclick=()=>applyTheme(b.dataset.m));
+applyTheme(localStorage.getItem("cairnTheme")||"system");
+</script>
+</body></html>

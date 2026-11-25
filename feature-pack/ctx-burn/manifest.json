@@ -1,0 +1,129 @@
+{
+  "name": "ctx-burn",
+  "version": "0.6.0",
+  "title": "ctx-burn — local context waste audit for AI coding agents",
+  "description": "Read-only audit of context waste across claude, codex, pi, opencode, hermes, openclaw and commandcode. Detects installed/running runtimes, shows auto-loaded memory size, cache full-rewrite share, context per request and the distillation break-even turn count as graphs. Reports the start-budget breakdown (fresh distill vs resume: working room left and rewrite cost). ctx-window adds the conversation-window breakdown (bell turns · boot · past the gate · tool-result size). English by default (--lang ko for Korean). No writes, no network.",
+  "category": "observability",
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "install_time_minutes": 1,
+  "requires_api_key": false,
+  "requires_auth": false,
+  "commands": [
+    {
+      "name": "ctx-burn",
+      "kind": "cli-binary",
+      "path": "bin/ctx-burn",
+      "runtime": "python3",
+      "args": [
+        "--lang en|ko",
+        "--runtime auto|all|<name>",
+        "--hours N",
+        "--request FILE",
+        "--json"
+      ],
+      "note": "--json 은 plan_input 블록(계약 ctx.v1)을 더한다. pool 별 session_hours 와 rate_quota(Claude 쿼터 = claude + pi-claude 가중 토큰 합 ÷ 세션-시간 합)를 낸다(r1618 · 기존 칸 유지). 용량·구독 산정 모드(--capacity·--inventory·--need·--scales)는 ctx-plan 몫이다."
+    },
+    {
+      "name": "ctx-waste",
+      "kind": "alias",
+      "path": "bin/ctx-burn",
+      "runtime": "python3",
+      "note": "옛 이름 — 영구 유지(오빠 승인 #278848)"
+    },
+    {
+      "name": "ctx-time",
+      "kind": "cli-binary",
+      "path": "bin/ctx-time",
+      "runtime": "python3",
+      "args": [
+        "--seat REGEX",
+        "--role master|arch|nano|desk|da",
+        "--hours N",
+        "--max-sessions N",
+        "--max-mb N",
+        "--max-scan N",
+        "--split 'YYYY-MM-DD HH:MM'",
+        "--no-html",
+        "--json",
+        "--lang en|ko"
+      ],
+      "note": "로컬 세션 기록(pi · codex)에서 갈래별 시간 · 70초 넘은 명령 · 명령 종류별 값을 낸다. 기본 표본 = 최근 3시간 · 세션 40개 · 80MB · 훑기 3000개(이 머신에서 2초 안이 목표). ctx-burn --time 도 같은 본체를 부른다. 쓰기 = --out 폴더의 html 1개(비교면 2개) · 네트워크 0. 명령 줄과 오류 문구는 갈래를 정하는 데만 쓰고 한 글자도 내보내지 않는다."
+    },
+    {
+      "name": "ctx-window",
+      "kind": "cli-binary",
+      "path": "bin/ctx-window",
+      "runtime": "python3",
+      "args": [
+        "--seat REGEX",
+        "--role master|arch|nano|desk|da",
+        "--hours N",
+        "--max-sessions N",
+        "--max-mb N",
+        "--max-scan N",
+        "--recv-gate N",
+        "--result-cap N",
+        "--split 'YYYY-MM-DD HH:MM'",
+        "--no-html",
+        "--json",
+        "--lang en|ko"
+      ],
+      "note": "pi 세션 기록에서 대화창을 어디에 썼는지 네 숫자를 낸다 = W1 알림만 받는 턴 몫 · W2 부팅에 쓴 대화창 · W3 문턱(--recv-gate 280000) 뒤 넘침 · W4 도구 결과 크기(--result-cap 2048 · 절단 통지 W4c). W4c = 결과 글 안 줄 전체가 통지 꼴이고(①) 그 줄 앞·뒤 utf-8 바이트 수가 통지의 머리·꼬리 숫자와 같을 때만 1건(②③) — 원문이 같은 모양을 인용하면 구분하지 못하는 형식 지표다. 표본 고르기와 읽기는 ctx-time 본체의 함수를 그대로 부른다(importlib · bytecode 쓰기 0). 기본 표본 = 최근 3시간 · 세션 40개 · 40MB · 훑기 3000개. 쓰기 = --out 폴더의 html 1개(기본 ~/.cache/ctx-burn/window/ctx-window.html) · 네트워크 0. 글의 내용은 터미널 · html · json 어디에도 나오지 않는다(명령 줄 머리도 안 낸다). ctx-burn --window 도 같은 본체를 부른다."
+    }
+  ],
+  "install": {
+    "script": "install.sh",
+    "target": "~/.local/bin/ctx-burn",
+    "idempotent": true,
+    "uninstall": "uninstall.sh"
+  },
+  "runtime_targets": [
+    {
+      "runtime": "claude-code",
+      "kind": "reads-local-session-logs",
+      "target": "~/.claude/projects/**/*.jsonl",
+      "status": "read-only"
+    },
+    {
+      "runtime": "claude-code",
+      "kind": "reads-auto-loaded-memory",
+      "target": "~/.claude/CLAUDE.md, ~/.claude/rules/*.md, <project>/CLAUDE.md",
+      "status": "read-only"
+    },
+    {
+      "runtime": "cliproxyapi",
+      "kind": "reads-request-body-log",
+      "target": "~/.cli-proxy-api/logs/error-v1-messages-*.log",
+      "status": "optional"
+    }
+  ],
+  "safety": {
+    "writes_files": false,
+    "network_calls": false,
+    "reads_conversation_text": false,
+    "note": "session jsonl 에서 usage 숫자만 집계한다. ctx-time 은 시간 칸 · 명령 줄 머리 · 오류 문구 머리를 읽되 명령 줄과 오류 문구는 내보내지 않는다(숫자 · 시각 · 고정 낱말 · 좌석 이름 · 세션 경로만). ctx-window 도 같은 꼴이다 — 도구 결과 글은 바이트 수와 W4c 절단 통지 모양 판별(통지 줄의 두 숫자와 앞·뒤 바이트 수를 견줌)로만 쓰고 건수만 낸다. 사용자 글은 머리 40자 안의 `[발주 #` 유무로만, 도구 호출 인자는 `[부팅 보고]` · `ft-tool-result/` 유무로만 본다. 글 내용은 어디에도 실리지 않는다."
+  },
+  "weights": {
+    "cache_read": 0.1,
+    "cache_write_1h": 2.0,
+    "cache_write_5m": 1.25,
+    "output": 5.0,
+    "note": "공개 단가 비율 근사. 실제 한도 산식은 비공개이므로 상대 비교용."
+  },
+  "public_docs": [
+    "README.md",
+    "INSTALL.md"
+  ],
+  "runtimes": [
+    "claude",
+    "codex",
+    "pi",
+    "opencode",
+    "hermes",
+    "openclaw",
+    "commandcode"
+  ]
+}

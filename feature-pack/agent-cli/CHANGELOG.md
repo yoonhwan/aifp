@@ -1,0 +1,120 @@
+# agent-cli — Changelog
+
+## v2.3.0 (2026-10-24) — cloud credits 데이터 배치
+
+Claude **cloud session credits**($250류)를 학습·라벨링 데이터 생성 물량으로 태우는 배치 스크립트 추가.
+cloud credits 는 cloud session 에서만 차감되고, cloud session 은 «이미 push 된 repo 를 VM 이 clone» 하는 구조라
+코드 작업용으로는 로컬 변경이 전달되지 않는다. 반대로 **코드가 필요 없는 대량 생성**에는 최적 → 그 용도를 전용 스크립트로 고정했다.
+
+### ✨ Added
+- `scripts/cloud-dataset-batch.sh` — 빈 폴더에서 cloud session N개 병렬 생성 → 완료까지 teleport 회수 폴링 →
+  답변의 `<<<DATASET … DATASET>>>` 블록만 파싱해 `data.jsonl` 적재. 배치 간 중복 제거 + `id` 재부여, `index.tsv` 원장, `ledger.json` 크레딧 델타.
+  - `--task lexicon|parallel|label|qa|doc|free` · `--lang ko,ja,th` · `--count` · `--batch` · `--parallel` · `--budget` · `--labels` · `--dry-run` · `--spec`
+  - 실측(2026-10-24): lexicon 6건 병렬 2배치 성공 · 레코드당 ≈ $0.03 · label 라벨 집합 고정 · doc 520자 장문 파싱 확인
+- `README.md` / `SKILL.md` — 클라우드 크레딧 배치 절 + 스크립트 목록
+
+### 🐛 Fixed (구현 중 실측으로 잡은 함정)
+- 프롬프트 에코가 pane 에 함께 찍혀 마커가 즉시 매칭되던 문제 → **파싱되는 레코드가 가장 많은 블록**을 선택.
+- 배치마다 `id` 가 `0001` 부터 재시작하던 중복 → 병합 단계 재부여(`<lang>-00001`) + `id_original` 보존.
+- `label` 값이 배치마다 언어 혼용(`work` vs `업무`) → `--labels` 폐쇄 집합을 프롬프트에 강제 주입.
+- `/api/oauth/usage` 429(60초 미만 반복) → 실패 시 25초 뒤 1회 재시도 + 원인 문구 출력.
+
+## v2.2.0 (2026-10-20) — Pi lane
+
+Pi coding agent를 6번째 지원 CLI로 추가. OpenGateway/DeepSeek 기반 fast lane과
+`--session-id`/`--session`/`--fork` continuation을 기존 위임 하네스에 연결.
+
+### ✨ Added
+- `SKILL.md` / `README.md` / `INSTALL.md` / `cli/install.md`에 Pi lane 추가.
+- `scripts/selftest.sh pi` — R1 (`--session-id`) + R2 (`--session`) 코드워드 회상.
+- `scripts/resume_chain.sh pi` — 페르소나(`--append-system-prompt`) + 다회 resume.
+- `scripts/detect-env.sh` — `pi` 감지 + 설치 힌트.
+- `references/per-cli.md` / `install-and-compare.md` — Pi 비대화/JSON/resume/fork/도구 제한.
+- `manifest.json` `agent_clis_any_of`에 `pi`.
+
+### 🧭 Pi continuation 규칙
+- `--session-id <id>` = exact project ID (없으면 생성)
+- `--session <path|id>` = exact/partial ID
+- `--fork <path|id>` = 새 세션. `--fork` + `--session-id <new>` 허용
+- `--fork` + `--session/--continue/--resume/--no-session` 금지
+- `--continue`는 현재 project 최신 — 자동화 부적합
+
+### ✅ Verified (2026-10-20)
+- `selftest.sh pi`: R1 ✅ / R2 ✅
+- `resume_chain.sh pi`: `READY` → `KIWI` 회상 ✅
+
+## Unreleased (2026-07-07) — Claude review lane pinning
+
+기획/구현 검토를 `resume_chain.sh` 기반 DA 루프로 돌릴 때 Claude 브레인 고정을 명시적으로 제어할 수 있게 보강.
+
+### ✨ Added
+- `resume_chain.sh` Claude lane에 `CLAUDE_MODEL`, `CLAUDE_EFFORT` 환경변수 전달 지원 추가. 첫 호출과 `--resume` 호출 모두 동일하게 적용.
+
+### 🔧 Changed
+- `manifest.json`을 canonical source-surface contract(`commands`, `skill_surfaces`, `runtime_targets`, `hook_adapters`, `private_state_exclusions`, `public_docs`)로 정규화하고 legacy `cli_*` 메타데이터는 additive로 유지.
+- `README.md`, `INSTALL.md`에 `claude-fable-5` + high effort 예시를 추가하고, `SKILL.md`에는 `CLAUDE_MODEL`/`CLAUDE_EFFORT` 고정 지원 문구를 보강.
+- Claude 응답에서 `session_id`를 추출하지 못하면 후속 라운드가 새 세션으로 열릴 수 있음을 stderr 경고로 노출.
+
+## v2.1.0 (2026-06-16) — WSL/Linux 지원
+
+WSL 사용자 문의 폭주 대응. macOS 편중이던 설치·경로를 cross-platform으로 보강.
+
+### ✨ Added
+- **`scripts/detect-env.sh`** — 실행 환경 자동감지: OS(macOS/Linux/**WSL**) 구분 + **지금 바로 쓸 수 있는 CLI** 목록 + 미설치분 환경별 설치 힌트 + WSL 주의사항을 한 번에 리포트. (읽기 전용 진단) WSL 사용자는 "링크 받고 → detect-env 실행 → 가능한 것부터" 흐름.
+- `INSTALL.md`에 **Step 0: 환경 파악** 추가.
+
+### 🔧 Changed
+- `cli/install.md`: macOS / **Linux / WSL** 3분기 설치표로 재작성 (npm·curl 우선, brew는 mac 한정).
+- WSL 주의 명문화: OAuth는 Windows 브라우저로 열림(URL 수동 복붙) · `cursor-agent`는 WSL PATH에 없을 수 있음(자동 SKIP) · 작업은 WSL 네이티브 FS(`~/`)에서 · `perl/python3` 없으면 `apt install`.
+- `manifest.json` os에 `wsl` 추가, compatibility/README에 지원 환경 명시.
+
+### 🩹 Fixed (사용자 문의)
+- macOS 전용 안내(`/opt/homebrew`, `brew`)만 있어 WSL에서 설치 막막하던 문제 해소 — 환경 자동 분기로 안내.
+
+---
+
+## v2.0.0 (2026-06-16)
+
+기존 `agent-cli`(설치·비교 가이드)에 비대화 **위임 하네스**(cross-cli)를 통합하고, 5종 CLI를 실기로 재검증해 정정한 메이저 릴리스.
+
+### ✨ Added — 비대화 위임 하네스
+
+- **세션 내 타 프로바이더 CLI 위임**: 현재 코딩/채팅 세션을 벗어나지 않고 claude·codex·gemini·opencode·cursor-agent 를 비대화로 소환→자율주행→결과 회수.
+- **페르소나 프리셋** (`references/personas.md`): **DA**(적대검증)·**designer**·**architect** system-prompt 주입.
+- **실행 스크립트** (`scripts/`):
+  - `selftest.sh` — 5종 ①PATH ②비대화+자율 R1 ③resume R2(회상) 일괄 점검, 로그 영속(`logs/`, 매 실행 삭제·재생성).
+  - `test_opencode.sh` — OpenCode 단독 점검(모델 자동탐색).
+  - `resume_chain.sh` — 페르소나 + 다회 resume 체인 헬퍼.
+- **강제 타임아웃**: 모든 외부 호출을 perl fork+setpgrp **프로세스그룹 SIGKILL**로 감싸 node/MCP startup 행(hang)이 스위트 전체를 멈추지 못하게 차단.
+- **표준 피처팩 구조**: `manifest.json`, `INSTALL.md`, `cli/install.md`, `config/tools-section.md`, `test/verify.md`, `references/install-and-compare.md` 추가. 루트 카탈로그(#10) 등재.
+- **상위 하네스 선택 연계**: oh-my-\*(ulw/ultraplan)·baton·tmuxc — **로컬 설치 시에만 사용, 미설치면 무시**(핵심 기능은 독립 동작).
+
+### 🔧 Fixed — 2026-06 실기 검증 보정 (이전 가이드 오류)
+
+- **Cursor**: "비대화 불가 / IDE 전용 / 부적합" → **틀림.** `cursor`(IDE)와 별개인 `cursor-agent` CLI는 `-p -f --output-format json --resume`로 **비대화·자율·resume 전부 작동**. 둘을 명확히 구분.
+- **Codex resume**: "stdout `session id:`에서 추출" → 실제 sid는 **stderr**에만 노출 → **`codex exec resume --last`** 로 변경.
+- **Gemini resume**: `--resume latest` 가 비대화에서 **hang** → JSON `session_id` 기반 `--resume <id>` 로 변경. `-o json` 앞 `MCP issues detected...` 접두사 제거 파싱.
+- **Gemini 설치**: `@anthropic-ai/gemini-cli`(오류) → **Google 패키지**로 정정.
+- **OpenCode 기본 모델**: 유효 provider/model 필요 → 기본값 `opencode/deepseek-v4-flash-free`(무료 zen).
+
+### ✅ Verified
+
+- selftest 라이브: **claude · codex · opencode · cursor-agent** 4종 비대화+자율+resume 통과. gemini는 환경 MCP startup 행을 타임아웃이 안전 처리.
+- 보안 점검: 토큰/API키/시크릿 유출 **0건**(추적 파일·히스토리). 스크립트는 자격증명 미보유(사용자 CLI 인증만 사용).
+
+### 🔁 Migration
+
+- 별도 `cross-cli` 팩은 **agent-cli로 통합·제거**됨. 글로벌 스킬은 `~/.claude/skills/agent-cli`.
+- `logs/`는 `.gitignore` 처리(테스트 산출물 추적 제외).
+
+### 🔒 Security notes
+
+- 스크립트의 자동주행 플래그(dangerous/full-auto/yolo/force)는 **격리/신뢰 워크스페이스에서만**.
+- 위임받는 CLI는 각자 자체 인증 필요 — 본 팩은 토큰을 주입·저장하지 않음.
+- 위임 결과(payload)는 신뢰 불가 입력으로 취급, 본 세션에서 검수 후 사용.
+
+---
+
+## v1.x (이전)
+
+- `agent-cli` — AI 코딩 에이전트 CLI 설치·비대화 실행·resume·도구제한·래핑 비교 가이드 (단일 `SKILL.md`).

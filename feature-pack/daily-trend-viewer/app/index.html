@@ -1,0 +1,1482 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>데일리 트렌드 뷰어</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --card: #1c2029; --border: #2a2f3a;
+    --text: #e8eaf0; --muted: #9aa3b2; --accent: #ff4d6d; --accent2: #4d9fff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, "Apple SD Gothic Neo", "Pretendard", sans-serif; }
+  header { position: sticky; top: 0; z-index: 50; background: rgba(15,17,21,.92); backdrop-filter: blur(8px); border-bottom: 1px solid var(--border); padding: 14px 24px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  header h1 { font-size: 20px; font-weight: 800; }
+  header h1 span { color: var(--accent); }
+  #today { color: var(--muted); font-size: 13px; }
+  #searchForm { margin-left: auto; display: flex; gap: 6px; }
+  #searchInput { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 8px 13px; color: var(--text); font-size: 13px; width: 230px; }
+  #searchInput:focus { outline: none; border-color: var(--accent2); }
+  #searchBtn { background: var(--accent); border: none; color: #fff; border-radius: 8px; padding: 8px 14px; font-size: 13px; font-weight: 700; cursor: pointer; white-space: nowrap; }
+  @media (max-width: 360px) {
+    #searchInput { width: 140px; }
+  }
+  #refreshBtn { background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 8px 14px; font-size: 13px; cursor: pointer; }
+  #refreshBtn:hover { border-color: var(--accent2); }
+  #updated { color: var(--muted); font-size: 12px; }
+
+  .tabs { display: flex; gap: 8px; padding: 14px 24px 0; flex-wrap: wrap; }
+  .tab { padding: 9px 18px; border-radius: 10px 10px 0 0; background: transparent; color: var(--muted); border: 1px solid transparent; border-bottom: none; cursor: pointer; font-size: 14px; font-weight: 700; }
+  .tab.active { background: var(--panel); color: var(--text); border-color: var(--border); }
+  .toolbar { background: var(--panel); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); padding: 12px 24px; display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chip { padding: 6px 13px; border-radius: 999px; background: var(--card); border: 1px solid var(--border); color: var(--muted); font-size: 13px; cursor: pointer; white-space: nowrap; }
+  .chip.active { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700; }
+  .periods { display: flex; gap: 4px; background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 3px; }
+  .period { padding: 5px 12px; border-radius: 8px; background: transparent; border: none; color: var(--muted); font-size: 13px; cursor: pointer; }
+  .period.active { background: var(--accent2); color: #fff; font-weight: 700; }
+
+  main { padding: 20px 24px 60px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 16px; }
+  .grid.shorts { grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; cursor: pointer; transition: transform .12s, border-color .12s; position: relative; }
+  .card:hover { transform: translateY(-3px); border-color: var(--accent2); }
+  .thumb { width: 100%; aspect-ratio: 16/9; object-fit: cover; display: block; background: #000; }
+  .grid.shorts .thumb { aspect-ratio: 9/13; }
+  .rank { position: absolute; top: 8px; left: 8px; background: rgba(0,0,0,.75); color: #ffd166; font-weight: 800; font-size: 13px; padding: 3px 9px; border-radius: 7px; }
+  .rank.top { background: var(--accent); color: #fff; }
+  .len { position: absolute; right: 8px; background: rgba(0,0,0,.8); color: #fff; font-size: 11px; padding: 2px 6px; border-radius: 5px; }
+  .meta { padding: 10px 12px 12px; }
+  .title { font-size: 13.5px; font-weight: 600; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; min-height: 36px; }
+  .sub { margin-top: 6px; color: var(--muted); font-size: 12px; display: flex; flex-wrap: wrap; gap: 4px 8px; }
+  .views { color: var(--accent); font-weight: 700; }
+  .status { padding: 60px 0; text-align: center; color: var(--muted); font-size: 15px; }
+
+  /* 외부 플랫폼(틱톡/릴스) 탭 */
+  .ext-section h2 { font-size: 16px; margin: 6px 0 12px; }
+  .linkgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin-bottom: 30px; }
+  .linkcard { display: block; text-decoration: none; background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 16px 14px; color: var(--text); font-size: 14px; font-weight: 600; }
+  .linkcard:hover { border-color: var(--accent); }
+  .linkcard small { display: block; color: var(--muted); font-weight: 400; margin-top: 5px; font-size: 12px; }
+  .addbar { display: flex; gap: 8px; margin-bottom: 16px; max-width: 720px; }
+  .addbar input { flex: 1; background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; color: var(--text); font-size: 14px; }
+  .addbar button { background: var(--accent2); border: none; border-radius: 10px; padding: 10px 18px; color: #fff; font-weight: 700; cursor: pointer; }
+  .note { color: var(--muted); font-size: 12.5px; margin-bottom: 18px; line-height: 1.6; }
+  .saved-card .del { position: absolute; top: 8px; right: 8px; background: rgba(0,0,0,.7); color: #fff; border: none; border-radius: 6px; padding: 3px 8px; cursor: pointer; font-size: 12px; display: none; }
+  .saved-card:hover .del { display: block; }
+
+  /* AI 탭 */
+  .ai-section { margin-bottom: 34px; }
+  .ai-section h2 { font-size: 16px; margin-bottom: 12px; }
+  .ai-section h2 small { color: var(--muted); font-weight: 400; font-size: 12px; margin-left: 6px; }
+  .modelrow { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
+  .modelcard { display: block; text-decoration: none; background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 13px 14px; color: var(--text); }
+  .modelcard:hover { border-color: var(--accent2); }
+  .modelcard .mid { font-size: 13px; font-weight: 700; word-break: break-all; line-height: 1.35; }
+  .modelcard .msub { margin-top: 7px; display: flex; gap: 8px; align-items: center; font-size: 11.5px; color: var(--muted); flex-wrap: wrap; }
+  .pill { border-radius: 999px; padding: 2px 8px; font-size: 10.5px; font-weight: 700; }
+  .pill.t2v { background: rgba(255,77,109,.16); color: var(--accent); }
+  .pill.i2v { background: rgba(77,159,255,.16); color: var(--accent2); }
+  .newslist { display: flex; flex-direction: column; gap: 6px; }
+  .newsitem { display: flex; gap: 10px; align-items: baseline; background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; text-decoration: none; color: var(--text); }
+  .newsitem:hover { border-color: var(--accent); }
+  .newsitem .badge { flex-shrink: 0; font-size: 10.5px; font-weight: 700; border-radius: 6px; padding: 2px 7px; }
+  .badge.kr { background: rgba(255,77,109,.16); color: var(--accent); }
+  .badge.gl { background: rgba(77,159,255,.16); color: var(--accent2); }
+  .newsitem .ntitle { font-size: 13.5px; line-height: 1.4; flex: 1; }
+  .newsitem .nsrc { flex-shrink: 0; color: var(--muted); font-size: 12px; }
+
+  /* 릴스 탭 계정 관리 */
+  .acc-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+  .acc-chip { display: inline-flex; gap: 6px; align-items: center; background: var(--card); border: 1px solid var(--border); border-radius: 999px; padding: 5px 7px 5px 12px; font-size: 12.5px; color: var(--text); }
+  .acc-chip button { background: var(--panel); border: none; color: var(--muted); border-radius: 50%; width: 18px; height: 18px; cursor: pointer; font-size: 11px; line-height: 1; }
+  .acc-chip button:hover { color: var(--accent); }
+
+  /* 편집 모드 */
+  .mgmt-section h2{display:flex;align-items:center;gap:8px}
+  .edit-toggle,.edit-clear{padding:3px 10px;font-size:12px;cursor:pointer;
+    border:1px solid #333;border-radius:6px;background:#1a1a2e;color:#e0e0e0}
+  .edit-clear{color:#e5484d}
+  .mgmt-section:not(.editing) .addbar{display:none}
+  .mgmt-section:not(.editing) .acc-chip button{display:none}
+  .mgmt-section:not(.editing) .edit-clear{display:none}
+
+  /* 정렬 접이식 메뉴 */
+  .sortbar { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
+  .sortmenu { position: relative; }
+  .sortmenu > .sorttoggle { background: var(--card); border: 1px solid var(--border); color: var(--text); border-radius: 10px; padding: 9px 15px; font-size: 13.5px; font-weight: 700; cursor: pointer; display: flex; align-items: center; gap: 8px; }
+  .sortmenu > .sorttoggle:hover { border-color: var(--accent2); }
+  .sortmenu > .sorttoggle .caret { transition: transform .18s; font-size: 10px; color: var(--muted); }
+  .sortmenu.open > .sorttoggle .caret { transform: rotate(180deg); }
+  .sortmenu .sortlist { position: absolute; top: calc(100% + 6px); left: 0; z-index: 40; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 6px; min-width: 190px; box-shadow: 0 12px 32px rgba(0,0,0,.5); display: none; }
+  .sortmenu.open .sortlist { display: block; }
+  .sortlist button { display: flex; width: 100%; align-items: center; gap: 10px; background: transparent; border: none; color: var(--text); padding: 9px 12px; border-radius: 8px; font-size: 13.5px; cursor: pointer; text-align: left; }
+  .sortlist button:hover { background: var(--card); }
+  .sortlist button.sel { color: var(--accent); font-weight: 700; }
+  .sortlist button .check { margin-left: auto; opacity: 0; }
+  .sortlist button.sel .check { opacity: 1; }
+  .sortcount { color: var(--muted); font-size: 12.5px; }
+
+  /* 서브탭 (전체·등록목록·태그) */
+  .subtabs { display: flex; gap: 4px; background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 3px; }
+  .subtab { padding: 5px 14px; border-radius: 8px; background: transparent; border: none; color: var(--muted); font-size: 13px; cursor: pointer; font-weight: 600; white-space: nowrap; }
+  .subtab.active { background: var(--accent2); color: #fff; }
+  /* 개수 선택 */
+  .limit-sel select { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; color: var(--text); font-size: 13px; cursor: pointer; }
+  /* 지원 배지 */
+  .support-badge { display: inline-block; background: rgba(255,209,102,.15); color: #ffd166; font-size: 12px; padding: 4px 10px; border-radius: 8px; margin-bottom: 12px; }
+  .support-badge.unsupported { background: rgba(229,72,77,.15); color: #e5484d; }
+  /* 에러 배너 */
+  .error-banner { background: rgba(229,72,77,.1); border: 1px solid rgba(229,72,77,.3); border-radius: 10px; padding: 10px 16px; margin-bottom: 14px; color: #e5484d; font-size: 13px; }
+
+  /* 소셜 포스트(X·스레드) 카드 */
+  .postlist { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 14px; }
+  .postcard { display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 15px 16px; cursor: pointer; transition: border-color .12s, transform .12s; }
+  .postcard:hover { border-color: var(--accent2); transform: translateY(-2px); }
+  .postcard .phead { display: flex; align-items: center; gap: 8px; margin-bottom: 9px; }
+  .postcard .prank { background: var(--panel); color: #ffd166; font-weight: 800; font-size: 12px; padding: 2px 9px; border-radius: 7px; }
+  .postcard .prank.top { background: var(--accent); color: #fff; }
+  .postcard .pacct { font-size: 13px; font-weight: 700; }
+  .postcard .pacct small { color: var(--muted); font-weight: 400; margin-left: 3px; }
+  .postcard .ptext { font-size: 14px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden; }
+  .postcard .pmedia { margin-top: 10px; border-radius: 10px; width: 100%; max-height: 240px; object-fit: cover; background: #000; }
+  .postcard .pstats { display: flex; gap: 16px; margin-top: 12px; padding-top: 11px; border-top: 1px solid var(--border); font-size: 13px; color: var(--muted); }
+  .postcard .pstats b { color: var(--text); }
+  .postcard .pstats .hot { color: var(--accent); }
+
+  /* 재생 모달 */
+  #modal { position: fixed; inset: 0; background: rgba(0,0,0,.85); display: none; align-items: center; justify-content: center; z-index: 100; padding: 24px; }
+  #modal.open { display: flex; }
+  .modal-box { width: min(900px, 100%); }
+  .modal-box.vertical { width: min(400px, 100%); }
+  .player { width: 100%; aspect-ratio: 16/9; border: none; border-radius: 12px; background: #000; }
+  .modal-box.vertical .player { aspect-ratio: 9/16; }
+  .modal-actions { display: flex; gap: 10px; margin-top: 12px; justify-content: flex-end; }
+  .modal-actions a, .modal-actions button { background: var(--panel); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 8px 16px; font-size: 13px; cursor: pointer; text-decoration: none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>데일리 <span>트렌드</span> 뷰어</h1>
+  <div id="today"></div>
+  <form id="searchForm">
+    <input id="searchInput" type="search" placeholder="유튜브 검색어 입력 (예: AI 광고)">
+    <button id="searchBtn" type="submit">🔍 검색</button>
+  </form>
+  <button id="refreshBtn">🔄 새로고침</button>
+  <div id="updated"></div>
+</header>
+
+<nav class="tabs" id="tabs">
+  <button class="tab active" data-tab="youtube">▶ 유튜브</button>
+  <button class="tab" data-tab="shorts">⚡ 쇼츠</button>
+  <button class="tab" data-tab="ai">🤖 AI 영상</button>
+  <button class="tab" data-tab="reels">📸 릴스</button>
+  <button class="tab" data-tab="x">𝕏 트위터</button>
+  <button class="tab" data-tab="threads">🧵 스레드</button>
+  <button class="tab" data-tab="tiktok">🎵 틱톡</button>
+</nav>
+
+<div class="toolbar" id="toolbar">
+  <div class="subtabs" id="scopeTabs">
+    <button class="subtab active" data-scope="all">전체</button>
+    <button class="subtab" data-scope="accounts">등록목록</button>
+    <button class="subtab" data-scope="tags">태그</button>
+  </div>
+  <div class="periods" id="periods">
+    <button class="period" data-period="day">오늘</button>
+    <button class="period active" data-period="week">이번 주</button>
+    <button class="period" data-period="month">이번 달</button>
+  </div>
+  <div class="sortmenu" id="rankSortMenu">
+    <button class="sorttoggle">정렬: <span class="curlabel">조회수순</span> <span class="caret">▼</span></button>
+    <div class="sortlist"></div>
+  </div>
+  <button class="sorttoggle" id="orderToggleBtn" title="정렬 방향 전환" style="padding:6px 10px;font-size:14px;cursor:pointer;border:1px solid #333;border-radius:6px;background:#1a1a2e;color:#e0e0e0">▼ 내림차순</button>
+  <div class="limit-sel">
+    <select id="limitSelect">
+      <option value="50">50개</option>
+      <option value="100" selected>100개</option>
+      <option value="150">150개</option>
+      <option value="200">200개</option>
+    </select>
+  </div>
+</div>
+
+<main>
+  <div id="videoView">
+    <div id="rankYtBanner"></div>
+    <div id="ytAccSection" class="mgmt-section" style="display:none">
+      <h2 style="font-size:16px;margin-bottom:10px">👤 등록 채널 <button type="button" class="edit-toggle">✏️ 편집</button><button type="button" class="edit-clear">🗑 모두 삭제</button></h2>
+      <div class="acc-chips" id="ytAccChips"></div>
+      <div class="addbar">
+        <input id="ytAccInput" type="text" placeholder="유튜브 채널 핸들 (예: @OpenAI)">
+        <button id="ytAccAdd">채널 추가</button>
+      </div>
+    </div>
+    <div id="ytTagSection" class="mgmt-section" style="display:none">
+      <h2 style="font-size:16px;margin-bottom:10px">🏷️ 등록 태그 <button type="button" class="edit-toggle">✏️ 편집</button><button type="button" class="edit-clear">🗑 모두 삭제</button></h2>
+      <div class="acc-chips" id="ytTagChips"></div>
+      <div class="addbar">
+        <input id="ytTagInput" type="text" placeholder="검색 태그 (예: AI 광고)">
+        <button id="ytTagAdd">태그 추가</button>
+      </div>
+    </div>
+    <div class="status" id="status">불러오는 중...</div>
+    <div class="grid" id="grid"></div>
+    <span class="sortcount" id="rankYtCount" style="display:block;margin-top:8px"></span>
+  </div>
+
+  <div id="aiView" style="display:none">
+    <div class="ai-section">
+      <h2>🚀 새로 나온 영상 생성 모델 <small>Hugging Face · 최신 등록순</small></h2>
+      <div class="modelrow" id="aiLatest"></div>
+    </div>
+    <div class="ai-section">
+      <h2>🔥 지금 뜨는 모델 <small>Hugging Face · 트렌딩</small></h2>
+      <div class="modelrow" id="aiTrending"></div>
+    </div>
+    <div class="ai-section">
+      <h2>📰 AI 영상 뉴스 <small>구글 뉴스 · 최신순</small></h2>
+      <div class="newslist" id="aiNews"></div>
+    </div>
+    <p class="note">💡 유튜브 탭에서 카테고리별 인기 영상을 조회수·좋아요순으로 볼 수 있어요.</p>
+    <div class="status" id="aiStatus" style="display:none"></div>
+  </div>
+
+  <div id="reelsView" class="ext-section" style="display:none">
+    <div id="rankReelsBanner"></div>
+    <p class="note">인스타그램 웹 내부 API를 통해 등록된 계정들의 최신 릴스를 가져와 조회수순으로 정렬합니다. 아래에서 즐겨보는 크리에이터 계정을 자유롭게 추가·삭제하세요.</p>
+    <div id="igLoginPanel" style="margin-bottom:20px">
+      <div class="note" id="igLoginStatus" style="margin-bottom:10px"></div>
+      <div id="igLoginForm" style="display:none">
+        <p class="note">
+          1) 아래 버튼으로 인스타그램 로그인 페이지를 새 탭에서 열고 로그인하세요<br>
+          2) 로그인된 그 탭에서 <b>F12</b> 키를 누르세요 (안 열리면 우측 상단 <b>⋮</b> 메뉴 → <b>도구 더보기</b> → <b>개발자 도구</b>)<br>
+          3) 개발자 도구 상단 탭에서 <b>Network</b>(네트워크)를 클릭하세요<br>
+          4) 브라우저 새로고침 버튼(또는 <b>F5</b>)으로 페이지를 새로고침하세요 — 목록에 요청들이 쭉 뜹니다<br>
+          5) 목록 <b>가장 위쪽</b>에 있는 <code>www.instagram.com</code> 요청을 클릭하세요<br>
+          6) 오른쪽에 뜨는 패널에서 <b>Headers</b> 탭 → <b>Request Headers</b> 항목을 찾고, 그 안의 <code>Cookie</code> 값 전체를 복사하세요<br>
+          7) 아래 입력창에 붙여넣고 저장을 누르세요
+        </p>
+        <div class="addbar">
+          <button id="igOpenLoginBtn" type="button">인스타그램 로그인 페이지 열기</button>
+        </div>
+        <div class="addbar">
+          <input id="igCookieInput" type="text" placeholder="sessionid=...; csrftoken=...; ds_user_id=... 전체 붙여넣기">
+          <button id="igSaveCookieBtn" type="button">저장</button>
+        </div>
+      </div>
+      <div id="igLoggedInPanel" class="addbar" style="display:none">
+        <span id="igStatusBadge" class="note" style="margin:0"></span>
+        <button id="igCheckBtn" type="button">새로고침</button>
+        <button id="igRenewBtn" type="button">갱신</button>
+        <button id="igLogoutBtn" type="button">로그아웃</button>
+      </div>
+      <div id="igErrorMsg" class="note" style="display:none;color:#e5484d;margin-top:8px"></div>
+    </div>
+    <div id="reelsAccSection" class="mgmt-section">
+      <h2 style="font-size:16px;margin-bottom:10px">👤 구독 계정 <button type="button" class="edit-toggle">✏️ 편집</button><button type="button" class="edit-clear">🗑 모두 삭제</button></h2>
+      <div class="acc-chips" id="accChips"></div>
+      <div class="addbar">
+        <input id="accInput" type="text" placeholder="인스타그램 계정명 (예: runwayapp)">
+        <button id="accAdd">계정 추가</button>
+      </div>
+    </div>
+    <div id="reelsTagSection" class="mgmt-section" style="display:none">
+      <h2 style="font-size:16px;margin-bottom:10px">🏷️ 등록 태그 <button type="button" class="edit-toggle">✏️ 편집</button><button type="button" class="edit-clear">🗑 모두 삭제</button></h2>
+      <div class="acc-chips" id="reelsTagChips"></div>
+      <div class="addbar">
+        <input id="reelsTagAddInput" type="text" placeholder="해시태그 (예: aivideo)">
+        <button id="reelsTagAddBtn">태그 추가</button>
+      </div>
+    </div>
+    <div class="addbar">
+      <input id="reelsTagInput" type="search" placeholder="#해시태그 검색 (예: #운동)">
+      <button id="reelsTagBtn" type="button">🔍 검색</button>
+    </div>
+    <h2 style="font-size:16px;margin:22px 0 12px">📸 인기 릴스</h2>
+    <span class="sortcount" id="reelsCount"></span>
+    <div class="status" id="reelsStatus">불러오는 중...</div>
+    <div class="grid shorts" id="reelsGrid"></div>
+  </div>
+
+  <div id="xView" class="ext-section" style="display:none">
+    <div id="rankXBanner"></div>
+    <p class="note">트위터 임베드용 공개 API(무인증)로 구독 계정들의 최신 트윗을 참여수와 함께 가져옵니다. 아래 정렬 메뉴로 좋아요·댓글·리트윗순으로 바이럴 글을 볼 수 있습니다.</p>
+    <div class="addbar" style="margin-top:4px">
+      <input id="xSearchInput" type="search" placeholder="X에서 검색할 키워드 (예: AI 광고)">
+      <button id="xSearchBtn" type="button">X에서 검색 열기 ↗</button>
+    </div>
+    <p class="note">🔗 검색 결과는 이 뷰어 안이 아니라 X(트위터) 새 탭에서 열립니다. (X는 공식 무인증 검색 API가 없어요)</p>
+    <div id="xAccSection" class="mgmt-section">
+      <h2 style="font-size:16px;margin-bottom:10px">👤 구독 계정 <button type="button" class="edit-toggle">✏️ 편집</button><button type="button" class="edit-clear">🗑 모두 삭제</button></h2>
+      <div class="acc-chips" id="xChips"></div>
+      <div class="addbar">
+        <input id="xInput" type="text" placeholder="X(트위터) 계정명 (예: OpenAI)">
+        <button id="xAdd">계정 추가</button>
+      </div>
+    </div>
+    <div id="xTagSection" class="mgmt-section" style="display:none">
+      <h2 style="font-size:16px;margin-bottom:10px">🏷️ 등록 태그 <button type="button" class="edit-toggle">✏️ 편집</button><button type="button" class="edit-clear">🗑 모두 삭제</button></h2>
+      <div class="acc-chips" id="xTagChips"></div>
+      <div class="addbar">
+        <input id="xTagInput" type="text" placeholder="해시태그 (예: AI)">
+        <button id="xTagAddBtn">태그 추가</button>
+      </div>
+    </div>
+    <span class="sortcount" id="xCount" style="display:block;margin:20px 0 8px"></span>
+    <div class="status" id="xStatus">불러오는 중...</div>
+    <div class="postlist" id="xList"></div>
+  </div>
+
+  <div id="threadsView" class="ext-section" style="display:none">
+    <div id="rankThBanner"></div>
+    <p class="note">스레드는 인스타그램(메타)과 같은 백엔드를 씁니다. 로그인 없이 실시간 조회를 시도하며, 메타의 보안 정책상 조회가 막힌 경우 계정 바로가기로 안내합니다.</p>
+    <div class="addbar" style="margin-top:4px">
+      <input id="thSearchInput" type="search" placeholder="스레드에서 검색할 키워드 (예: AI)">
+      <button id="thSearchBtn" type="button">스레드에서 검색 열기 ↗</button>
+    </div>
+    <p class="note">🔗 검색 결과는 이 뷰어 안이 아니라 스레드 새 탭에서 열립니다. (스레드는 공식 무인증 검색 API가 없어요)</p>
+    <div id="thAccSection" class="mgmt-section">
+      <h2 style="font-size:16px;margin-bottom:10px">👤 구독 계정 <button type="button" class="edit-toggle">✏️ 편집</button><button type="button" class="edit-clear">🗑 모두 삭제</button></h2>
+      <div class="acc-chips" id="thChips"></div>
+      <div class="addbar">
+        <input id="thInput" type="text" placeholder="스레드 계정명 (예: openai)">
+        <button id="thAdd">계정 추가</button>
+      </div>
+    </div>
+    <span class="sortcount" id="thCount" style="display:block;margin:20px 0 8px"></span>
+    <div class="status" id="thStatus">불러오는 중...</div>
+    <div class="postlist" id="thList"></div>
+    <div id="thFallback" style="display:none"></div>
+  </div>
+
+  <div id="tiktokView" class="ext-section" style="display:none">
+    <div id="rankTtBanner"></div>
+    <p class="note">틱톡 실시간 인기 피드(지역: 한국)와 구독 계정들의 최신 영상을 조회수·좋아요·댓글순으로 모아 보여줍니다. 아래에서 계정을 자유롭게 추가·삭제하세요.</p>
+    <div class="addbar">
+      <input id="ttSearchInput" type="search" placeholder="틱톡 키워드 검색 (예: 챌린지)">
+      <button id="ttSearchBtn" type="button">🔍 검색</button>
+    </div>
+    <div id="ttAccSection" class="mgmt-section">
+      <h2 style="font-size:16px;margin-bottom:10px">👤 구독 계정 <button type="button" class="edit-toggle">✏️ 편집</button><button type="button" class="edit-clear">🗑 모두 삭제</button></h2>
+      <div class="acc-chips" id="ttChips"></div>
+      <div class="addbar">
+        <input id="ttInput" type="text" placeholder="틱톡 계정명 (@ 없이, 예: khaby.lame)">
+        <button id="ttAdd">계정 추가</button>
+      </div>
+    </div>
+    <div id="ttTagSection" class="mgmt-section" style="display:none">
+      <h2 style="font-size:16px;margin-bottom:10px">🏷️ 등록 태그 <button type="button" class="edit-toggle">✏️ 편집</button><button type="button" class="edit-clear">🗑 모두 삭제</button></h2>
+      <div class="acc-chips" id="ttTagChips"></div>
+      <div class="addbar">
+        <input id="ttTagInput" type="text" placeholder="검색 태그 (예: 챌린지)">
+        <button id="ttTagAddBtn">태그 추가</button>
+      </div>
+    </div>
+    <span class="sortcount" id="ttCount" style="display:block;margin:20px 0 8px"></span>
+    <div class="status" id="ttStatus">불러오는 중...</div>
+    <div class="grid shorts" id="ttGrid"></div>
+  </div>
+</main>
+
+<div id="modal">
+  <div class="modal-box" id="modalBox">
+    <iframe class="player" id="player" allow="autoplay; encrypted-media" allowfullscreen></iframe>
+    <div class="modal-actions">
+      <a id="openExternal" target="_blank" rel="noopener">유튜브에서 열기 ↗</a>
+      <button id="closeModal">닫기</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const state = { tab: 'youtube', category: '전체', period: 'week', categories: ['전체'], search: '' };
+const rankState = { scope: 'all', sort: 'views', limit: 100, order: 'desc' };
+
+const fmt = n => {
+  if (n >= 1e8) return (n / 1e8).toFixed(1).replace(/\.0$/, '') + '억회';
+  if (n >= 1e4) return (n / 1e4).toFixed(1).replace(/\.0$/, '') + '만회';
+  return n.toLocaleString('ko-KR') + '회';
+};
+const fmt2 = n => {
+  if (n >= 1e8) return (n / 1e8).toFixed(1).replace(/\.0$/, '') + '억';
+  if (n >= 1e4) return (n / 1e4).toFixed(1).replace(/\.0$/, '') + '만';
+  if (n >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, '') + '천';
+  return (n || 0).toLocaleString('ko-KR');
+};
+function timeAgo(ts) {
+  if (!ts) return '';
+  const s = Date.now() / 1000 - ts;
+  if (s < 3600) return Math.max(1, Math.floor(s / 60)) + '분 전';
+  if (s < 86400) return Math.floor(s / 3600) + '시간 전';
+  return Math.floor(s / 86400) + '일 전';
+}
+
+document.getElementById('today').textContent =
+  new Date().toLocaleDateString('ko-KR', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' });
+
+/* ---------- 재생 모달 ---------- */
+function openPlayer(id, vertical) {
+  document.getElementById('modalBox').className = 'modal-box' + (vertical ? ' vertical' : '');
+  document.getElementById('player').src = `https://www.youtube.com/embed/${id}?autoplay=1`;
+  document.getElementById('openExternal').href = `https://www.youtube.com/watch?v=${id}`;
+  document.getElementById('modal').classList.add('open');
+}
+function closePlayer() {
+  document.getElementById('player').src = '';
+  document.getElementById('modal').classList.remove('open');
+}
+document.getElementById('closeModal').onclick = closePlayer;
+document.getElementById('modal').onclick = e => { if (e.target.id === 'modal') closePlayer(); };
+
+/* ---------- 유튜브 검색 (기존 엔드포인트, 검색 전용 fallback) ---------- */
+let loadSeq = 0;
+let vidData = [];
+let vidHasLikes = false;
+async function loadVideos(force = false) {
+  if (state.tab !== 'youtube' && state.tab !== 'shorts') return;
+  const seq = ++loadSeq;
+  const grid = document.getElementById('grid');
+  const status = document.getElementById('status');
+  const wantLikes = rankState.sort === 'likes';
+  grid.innerHTML = '';
+  status.style.display = 'block';
+  status.textContent = wantLikes
+    ? '좋아요 수를 불러오는 중입니다... (영상마다 조회하느라 조금 걸려요)'
+    : '영상을 불러오는 중입니다...';
+  const q = new URLSearchParams({
+    category: state.category, period: state.period,
+    shorts: state.tab === 'shorts' ? '1' : '0', force: force ? '1' : '0',
+    enrich: wantLikes ? '1' : '0', q: state.search
+  });
+  try {
+    const res = await fetch('/api/videos?' + q);
+    const data = await res.json();
+    if (seq !== loadSeq) return;
+    document.getElementById('updated').textContent =
+      '업데이트: ' + new Date(data.fetchedAt * 1000).toLocaleTimeString('ko-KR');
+    vidData = data.videos;
+    vidHasLikes = wantLikes;
+    if (!vidData.length) { status.style.display = 'block'; status.textContent = '결과가 없습니다.'; return; }
+    status.style.display = 'none';
+    renderVideos();
+  } catch (e) {
+    if (seq !== loadSeq) return;
+    status.textContent = '불러오기에 실패했습니다. 네트워크를 확인해 주세요.';
+  }
+}
+function renderVideos() {
+  const grid = document.getElementById('grid');
+  grid.className = 'grid' + (state.tab === 'shorts' ? ' shorts' : '');
+  const f = rankState.sort;
+  const dir = rankState.order === 'asc' ? -1 : 1;
+  const sorted = vidData.slice().sort((a, b) => dir * ((b[f] || 0) - (a[f] || 0)));
+  grid.innerHTML = '';
+  sorted.forEach((v, i) => grid.appendChild(videoCard(v, i + 1)));
+}
+function videoCard(v, rank) {
+  const el = document.createElement('div');
+  el.className = 'card';
+  const likeStr = v.likes ? `<span class="views">👍 ${fmt2(v.likes)}</span>` : '';
+  el.innerHTML = `
+    <div style="position:relative">
+      <img class="thumb" loading="lazy" src="${v.thumbnail}" alt="">
+      <div class="rank${rank <= 3 ? ' top' : ''}">${rank}위</div>
+      ${v.length ? `<div class="len" style="bottom:8px">${v.length}</div>` : ''}
+    </div>
+    <div class="meta">
+      <div class="title"></div>
+      <div class="sub">
+        <span class="${rankState.sort === 'views' ? 'views' : ''}">조회수 ${fmt(v.views)}</span>
+        ${likeStr}
+        <span class="chn"></span><span>${v.published || ''}</span>
+      </div>
+    </div>`;
+  el.querySelector('.title').textContent = v.title;
+  el.querySelector('.chn').textContent = v.channel;
+  el.onclick = () => openPlayer(v.id, state.tab === 'shorts');
+  return el;
+}
+
+/* ---------- AI 영상 탭 ---------- */
+let aiLoaded = false;
+async function loadAI(force = false) {
+  const status = document.getElementById('aiStatus');
+  if (force || !aiLoaded) {
+    status.style.display = 'block';
+    status.textContent = 'AI 소식을 불러오는 중입니다...';
+  }
+  try {
+    const data = await (await fetch('/api/ai' + (force ? '?force=1' : ''))).json();
+    aiLoaded = true;
+    status.style.display = 'none';
+    document.getElementById('updated').textContent =
+      '업데이트: ' + new Date(data.fetchedAt * 1000).toLocaleTimeString('ko-KR');
+    renderModels('aiLatest', data.models.latest);
+    renderModels('aiTrending', data.models.trending);
+    const nl = document.getElementById('aiNews');
+    nl.innerHTML = '';
+    data.news.slice(0, 20).forEach(n => {
+      const a = document.createElement('a');
+      a.className = 'newsitem'; a.href = n.link; a.target = '_blank'; a.rel = 'noopener';
+      a.innerHTML = `<span class="badge ${n.region === '국내' ? 'kr' : 'gl'}">${n.region}</span>
+        <span class="ntitle"></span><span class="nsrc"></span>`;
+      a.querySelector('.ntitle').textContent = n.title;
+      a.querySelector('.nsrc').textContent = (n.source ? n.source + ' · ' : '') + timeAgo(n.ts);
+      nl.appendChild(a);
+    });
+  } catch (e) {
+    status.style.display = 'block';
+    status.textContent = '불러오기에 실패했습니다. 네트워크를 확인해 주세요.';
+  }
+}
+function renderModels(elId, models) {
+  const box = document.getElementById(elId);
+  box.innerHTML = '';
+  models.forEach(m => {
+    const a = document.createElement('a');
+    a.className = 'modelcard';
+    a.href = 'https://huggingface.co/' + m.id;
+    a.target = '_blank'; a.rel = 'noopener';
+    const t2v = m.pipeline === 'text-to-video';
+    a.innerHTML = `<div class="mid"></div>
+      <div class="msub">
+        <span class="pill ${t2v ? 't2v' : 'i2v'}">${t2v ? '텍스트→영상' : '이미지→영상'}</span>
+        <span>❤️ ${m.likes.toLocaleString()}</span>
+        <span>⬇️ ${m.downloads.toLocaleString()}</span>
+        <span>${m.createdAt ? m.createdAt.slice(0, 10) : ''}</span>
+      </div>`;
+    a.querySelector('.mid').textContent = m.id;
+    box.appendChild(a);
+  });
+}
+
+/* ---------- 인스타 세션 관리 ---------- */
+function showIgError(msg) {
+  const el = document.getElementById('igErrorMsg');
+  el.textContent = msg;
+  el.style.display = 'block';
+}
+function clearIgError() {
+  const el = document.getElementById('igErrorMsg');
+  el.style.display = 'none';
+  el.textContent = '';
+}
+async function loadIgSession() {
+  try {
+    const data = await (await fetch('/api/instagram/session')).json();
+    renderIgSession(data);
+  } catch (e) {
+    showIgError('세션 정보를 불러오지 못했습니다: ' + e.message);
+  }
+}
+function renderIgSession(data) {
+  const form = document.getElementById('igLoginForm');
+  const logged = document.getElementById('igLoggedInPanel');
+  const status = document.getElementById('igLoginStatus');
+  if (!data.loggedIn) {
+    status.textContent = '⚠️ 인스타그램 로그인이 필요합니다 (릴스 데이터를 가져오려면 세션 쿠키가 있어야 해요)';
+    form.style.display = 'block';
+    logged.style.display = 'none';
+    return;
+  }
+  status.textContent = '';
+  form.style.display = 'none';
+  logged.style.display = 'flex';
+  const validText = data.valid === false ? '⚠️ 만료/무효 (재로그인 필요)' : '✅ 정상';
+  document.getElementById('igStatusBadge').textContent =
+    `${validText} · 저장 후 ${data.daysSinceSaved}일 경과 · 예상 만료까지 약 ${data.estimatedDaysLeft}일 (추정)`;
+  if (data.valid === false && data.detail) {
+    showIgError('⚠️ ' + data.detail);
+  } else {
+    clearIgError();
+  }
+}
+document.getElementById('igOpenLoginBtn').addEventListener('click', () => {
+  window.open('https://www.instagram.com/accounts/login/', '_blank');
+});
+document.getElementById('igSaveCookieBtn').addEventListener('click', async () => {
+  const input = document.getElementById('igCookieInput');
+  const cookie = input.value.trim();
+  clearIgError();
+  if (!cookie) { showIgError('쿠키를 입력해주세요.'); return; }
+  const btn = document.getElementById('igSaveCookieBtn');
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/instagram/session', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'save', cookie })
+    });
+    const data = await res.json();
+    if (!res.ok) { showIgError(data.error || '저장에 실패했습니다.'); return; }
+    input.value = '';
+    renderIgSession(data);
+    if (data.valid) loadRank(true);
+  } catch (e) {
+    showIgError('저장 요청에 실패했습니다: ' + e.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
+document.getElementById('igCheckBtn').addEventListener('click', async () => {
+  clearIgError();
+  const btn = document.getElementById('igCheckBtn');
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '확인 중...';
+  try {
+    const res = await fetch('/api/instagram/session', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'check' })
+    });
+    const data = await res.json();
+    if (!res.ok) { showIgError(data.error || '확인에 실패했습니다.'); return; }
+    renderIgSession(data);
+  } catch (e) {
+    showIgError('확인 요청에 실패했습니다: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
+  }
+});
+document.getElementById('igRenewBtn').addEventListener('click', () => {
+  document.getElementById('igLoginForm').style.display = 'block';
+  document.getElementById('igLoggedInPanel').style.display = 'none';
+  document.getElementById('igLoginStatus').textContent = '새로 로그인한 뒤 쿠키를 다시 붙여넣어 갱신하세요.';
+  window.open('https://www.instagram.com/accounts/login/', '_blank');
+});
+document.getElementById('igLogoutBtn').addEventListener('click', async () => {
+  clearIgError();
+  try {
+    await fetch('/api/instagram/session', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'clear' })
+    });
+    loadIgSession();
+  } catch (e) {
+    showIgError('삭제 요청에 실패했습니다: ' + e.message);
+  }
+});
+
+/* ---------- 릴스 해시태그 검색 (기존 엔드포인트 fallback) ---------- */
+let reelsData = [];
+let reelsTag = '';
+async function loadReels(force = false) {
+  const seq = ++loadSeq;
+  const status = document.getElementById('reelsStatus');
+  const grid = document.getElementById('reelsGrid');
+  status.style.display = 'block';
+  status.textContent = reelsTag
+    ? '#' + reelsTag.replace(/^#/, '') + ' 해시태그 릴스를 불러오는 중입니다...'
+    : '릴스를 불러오는 중입니다... (계정이 많으면 수십 초 걸릴 수 있어요)';
+  grid.innerHTML = '';
+  try {
+    const params = new URLSearchParams();
+    if (force) params.set('force', '1');
+    if (reelsTag) params.set('tag', reelsTag);
+    const qs = params.toString();
+    const data = await (await fetch('/api/reels' + (qs ? '?' + qs : ''))).json();
+    if (seq !== loadSeq) return;
+    document.getElementById('updated').textContent =
+      '업데이트: ' + new Date(data.fetchedAt * 1000).toLocaleTimeString('ko-KR');
+    reelsData = data.reels || [];
+    if (!reelsData.length) {
+      document.getElementById('reelsCount').textContent = '';
+      status.textContent = '가져온 릴스가 없습니다.';
+      return;
+    }
+    status.style.display = 'none';
+    renderReels();
+  } catch (e) {
+    if (seq !== loadSeq) return;
+    status.textContent = '불러오기에 실패했습니다. 네트워크를 확인해 주세요.';
+  }
+}
+function renderReels() {
+  const grid = document.getElementById('reelsGrid');
+  const f = rankState.sort === 'createdAt' ? 'takenAt' : rankState.sort;
+  const label = { views: '조회수', likes: '좋아요', createdAt: '최신' };
+  const dir = rankState.order === 'asc' ? -1 : 1;
+  const sorted = reelsData.slice().sort((a, b) => dir * ((b[f] || 0) - (a[f] || 0)));
+  grid.innerHTML = '';
+  sorted.forEach((r, i) => {
+    const el = document.createElement('div');
+    el.className = 'card';
+    el.innerHTML = `
+      <div style="position:relative">
+        <img class="thumb" loading="lazy" src="/api/img?u=${encodeURIComponent(r.thumbnail)}" alt="">
+        <div class="rank${i < 3 ? ' top' : ''}">${i + 1}위</div>
+      </div>
+      <div class="meta">
+        <div class="title"></div>
+        <div class="sub">
+          <span class="${f === 'views' ? 'views' : ''}">👁️ ${fmt2(r.views)}</span>
+          <span class="${f === 'likes' ? 'views' : ''}">❤️ ${fmt2(r.likes || 0)}</span>
+          <span>💬 ${fmt2(r.comments || 0)}</span>
+        </div>
+        <div class="sub" style="margin-top:3px"><span class="acct"></span></div>
+      </div>`;
+    el.querySelector('.title').textContent = r.title;
+    el.querySelector('.acct').textContent = '@' + (r.account || '');
+    el.onclick = () => window.open(r.url, '_blank');
+    grid.appendChild(el);
+  });
+  document.getElementById('reelsCount').textContent =
+    `${label[rankState.sort] || rankState.sort} 기준 · 총 ${sorted.length}개`;
+}
+function reelsTagSubmit() {
+  reelsTag = document.getElementById('reelsTagInput').value.trim();
+  if (reelsTag) loadReels();
+  else loadRank();
+}
+document.getElementById('reelsTagBtn').onclick = reelsTagSubmit;
+document.getElementById('reelsTagInput').addEventListener('keydown', e => { if (e.key === 'Enter') reelsTagSubmit(); });
+
+/* ---------- 틱톡 키워드 검색 (기존 엔드포인트 fallback) ---------- */
+let tiktokData = [];
+let ttSearch = '';
+async function loadTikTok(force = false) {
+  const seq = ++loadSeq;
+  const status = document.getElementById('ttStatus');
+  const grid = document.getElementById('ttGrid');
+  status.style.display = 'block';
+  status.textContent = ttSearch
+    ? '틱톡에서 "' + ttSearch + '" 검색 중입니다...'
+    : '틱톡 인기 영상을 불러오는 중입니다...';
+  grid.innerHTML = '';
+  try {
+    const params = new URLSearchParams();
+    if (force) params.set('force', '1');
+    if (ttSearch) params.set('q', ttSearch);
+    const qs = params.toString();
+    const data = await (await fetch('/api/tiktok' + (qs ? '?' + qs : ''))).json();
+    if (seq !== loadSeq) return;
+    document.getElementById('updated').textContent =
+      '업데이트: ' + new Date(data.fetchedAt * 1000).toLocaleTimeString('ko-KR');
+    tiktokData = data.posts || [];
+    if (!tiktokData.length) {
+      document.getElementById('ttCount').textContent = '';
+      status.textContent = '가져온 영상이 없습니다.';
+      return;
+    }
+    status.style.display = 'none';
+    renderTikTok();
+  } catch (e) {
+    if (seq !== loadSeq) return;
+    status.textContent = '불러오기에 실패했습니다. 네트워크를 확인해 주세요.';
+  }
+}
+function renderTikTok() {
+  const grid = document.getElementById('ttGrid');
+  const f = rankState.sort;
+  const label = { views: '조회수', likes: '좋아요', createdAt: '최신' };
+  const dir = rankState.order === 'asc' ? -1 : 1;
+  const sorted = tiktokData.slice().sort((a, b) => dir * ((b[f] || 0) - (a[f] || 0)));
+  grid.innerHTML = '';
+  sorted.forEach((t, i) => {
+    const el = document.createElement('div');
+    el.className = 'card';
+    el.innerHTML = `
+      <div style="position:relative">
+        <img class="thumb" loading="lazy" src="/api/img?u=${encodeURIComponent(t.thumbnail)}" alt="">
+        <div class="rank${i < 3 ? ' top' : ''}">${i + 1}위</div>
+      </div>
+      <div class="meta">
+        <div class="title"></div>
+        <div class="sub">
+          <span class="${f === 'views' ? 'views' : ''}">👁️ ${fmt2(t.views)}</span>
+          <span class="${f === 'likes' ? 'views' : ''}">❤️ ${fmt2(t.likes)}</span>
+          <span>💬 ${fmt2(t.comments)}</span>
+        </div>
+        <div class="sub" style="margin-top:3px"><span class="acct"></span></div>
+      </div>`;
+    el.querySelector('.title').textContent = t.title;
+    el.querySelector('.acct').textContent = '@' + (t.account || '');
+    el.onclick = () => window.open(t.url, '_blank');
+    grid.appendChild(el);
+  });
+  document.getElementById('ttCount').textContent = `${label[f] || f} 기준 · 총 ${sorted.length}개`;
+}
+function ttSearchSubmit() {
+  ttSearch = document.getElementById('ttSearchInput').value.trim();
+  if (ttSearch) loadTikTok();
+  else loadRank();
+}
+document.getElementById('ttSearchBtn').onclick = ttSearchSubmit;
+document.getElementById('ttSearchInput').addEventListener('keydown', e => { if (e.key === 'Enter') ttSearchSubmit(); });
+
+/* ---------- X·스레드: 검색 새탭 링크아웃 ---------- */
+function wireSearchLinkout(inputId, btnId, buildUrl) {
+  const open = () => {
+    const kw = document.getElementById(inputId).value.trim();
+    if (!kw) return;
+    window.open(buildUrl(encodeURIComponent(kw)), '_blank');
+  };
+  document.getElementById(btnId).onclick = open;
+  document.getElementById(inputId).addEventListener('keydown', e => { if (e.key === 'Enter') open(); });
+}
+wireSearchLinkout('xSearchInput', 'xSearchBtn', q => 'https://x.com/search?q=' + q + '&f=live');
+wireSearchLinkout('thSearchInput', 'thSearchBtn', q => 'https://www.threads.net/search?q=' + q);
+
+/* ---------- Threads fallback (계정 바로가기) ---------- */
+function showThreadsFallback(accounts) {
+  const box = document.getElementById('thFallback');
+  box.style.display = 'block';
+  box.innerHTML = `<p class="note" style="margin-top:4px">⚠️ 지금은 스레드가 로그인 없는 조회를 차단하고 있어 실시간 글을 가져오지 못했습니다. 아래에서 각 계정을 바로 열어볼 수 있습니다. (메타가 접근을 다시 허용하면 자동으로 목록이 채워집니다.)</p>
+    <div class="linkgrid"></div>`;
+  const grid = box.querySelector('.linkgrid');
+  (accounts || []).forEach(name => {
+    const a = document.createElement('a');
+    a.className = 'linkcard'; a.href = 'https://www.threads.com/@' + encodeURIComponent(name);
+    a.target = '_blank'; a.rel = 'noopener';
+    const label = document.createTextNode('🧵 @' + name);
+    const small = document.createElement('small');
+    small.textContent = '스레드에서 열기 ↗';
+    a.appendChild(label);
+    a.appendChild(small);
+    grid.appendChild(a);
+  });
+}
+
+/* ---------- 접이식 정렬 메뉴 유틸 ---------- */
+function initFoldMenu(menuId, options, stateObj, onPick) {
+  const menu = document.getElementById(menuId);
+  if (!menu) return;
+  const list = menu.querySelector('.sortlist');
+  list.innerHTML = '';
+  options.forEach(o => {
+    const b = document.createElement('button');
+    b.className = o.key === stateObj.sort ? 'sel' : '';
+    b.innerHTML = `<span>${o.icon}</span><span>${o.label}</span><span class="check">✓</span>`;
+    b.onclick = () => {
+      if (stateObj.sort === o.key) { menu.classList.remove('open'); return; }
+      stateObj.sort = o.key;
+      menu.querySelector('.curlabel').textContent = o.label;
+      list.querySelectorAll('button').forEach(x => x.classList.remove('sel'));
+      b.classList.add('sel');
+      menu.classList.remove('open');
+      onPick();
+    };
+    list.appendChild(b);
+  });
+  menu.querySelector('.sorttoggle').onclick = e => {
+    e.stopPropagation();
+    document.querySelectorAll('.sortmenu.open').forEach(m => { if (m !== menu) m.classList.remove('open'); });
+    menu.classList.toggle('open');
+  };
+}
+document.addEventListener('click', () => document.querySelectorAll('.sortmenu.open').forEach(m => m.classList.remove('open')));
+
+/* ---------- 편집 모드 ---------- */
+const editState = { active: false, kind: null, base: [], current: [], platform: null };
+const lastChips = {};  // lastChips[platform] = { acc: [], tag: [] }
+const chipKey = tab => tab === 'shorts' ? 'youtube' : tab;
+
+function currentMgmtSection() {
+  const mgmt = RANK_MGMT[editState.platform || state.tab];
+  if (!mgmt) return null;
+  const id = editState.kind === 'tag' ? mgmt.tag : mgmt.acc;
+  return id ? document.getElementById(id) : null;
+}
+function renderEditChips() {
+  const tab = editState.platform || state.tab;
+  const mgmt = RANK_MGMT[tab];
+  if (editState.kind === 'acc') renderAccChips(mgmt.accChips, tab, editState.current);
+  else renderTagChips(mgmt.tagChips, tab, editState.current);
+}
+function editRemove(name) {
+  if (!editState.active) return;
+  editState.current = editState.current.filter(x => x !== name);
+  renderEditChips();
+}
+function editAdd(name) {
+  if (!editState.active || !name || editState.current.includes(name)) return;
+  editState.current = editState.current.concat([name]);
+  renderEditChips();
+}
+function enterEdit() {
+  editState.platform = state.tab;
+  editState.kind = rankState.scope === 'tags' ? 'tag' : 'acc';
+  editState.base = ((lastChips[chipKey(editState.platform)] || {})[editState.kind] || []).slice();
+  editState.current = editState.base.slice();
+  editState.active = true;
+  const sec = currentMgmtSection();
+  if (sec) {
+    sec.classList.add('editing');
+    sec.querySelector('.edit-toggle').textContent = '✔ 완료';
+  }
+}
+function exitEditUI() {
+  const sec = currentMgmtSection();
+  if (sec) {
+    sec.classList.remove('editing');
+    sec.querySelector('.edit-toggle').textContent = '✏️ 편집';
+  }
+  editState.active = false;
+  editState.platform = null;
+}
+async function commitEdit() {
+  const added = editState.current.filter(x => !editState.base.includes(x));
+  const removed = editState.base.filter(x => !editState.current.includes(x));
+  if (!added.length && !removed.length) { exitEditUI(); return; }
+  const ep = editState.platform === 'shorts' ? 'youtube' : editState.platform;
+  const path = editState.kind === 'tag' ? 'tags' : 'accounts';
+  try {
+    const res = await fetch(`/api/${ep}/${path}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'batch', add: added, remove: removed })
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    exitEditUI();
+    loadRank(true);
+  } catch (e) {
+    const platform = editState.platform || state.tab;
+    exitEditUI();
+    const mgmt = RANK_MGMT[platform];
+    if (mgmt && mgmt.banner) document.getElementById(mgmt.banner).innerHTML =
+      '<div class="error-banner">⚠️ 변경 저장에 실패했어요. 편집 버튼을 다시 눌러 시도해 주세요.</div>';
+  }
+}
+async function commitEditIfActive() { if (editState.active) await commitEdit(); }
+
+document.addEventListener('click', e => {
+  const t = e.target.closest('.edit-toggle');
+  if (t) { editState.active ? commitEdit() : enterEdit(); return; }
+  const c = e.target.closest('.edit-clear');
+  if (c && editState.active && confirm('등록된 항목을 모두 삭제할까요? (완료를 눌러야 서버에 반영돼요)')) {
+    editState.current = [];
+    renderEditChips();
+  }
+});
+
+/* ---------- 계정 칩 렌더 (공통) ---------- */
+function renderAccChips(elId, kind, accounts) {
+  const box = document.getElementById(elId);
+  if (!box) return;
+  if (!lastChips[chipKey(kind)]) lastChips[chipKey(kind)] = { acc: [], tag: [] };
+  lastChips[chipKey(kind)].acc = (accounts || []).slice();
+  box.innerHTML = '';
+  (accounts || []).forEach(name => {
+    const chip = document.createElement('span');
+    chip.className = 'acc-chip';
+    chip.innerHTML = `@<b></b><button title="삭제">✕</button>`;
+    chip.querySelector('b').textContent = name;
+    chip.querySelector('button').onclick = () => editRemove(name);
+    box.appendChild(chip);
+  });
+}
+
+/* ---------- 태그 칩 렌더 ---------- */
+function renderTagChips(elId, platform, tags) {
+  const box = document.getElementById(elId);
+  if (!box) return;
+  if (!lastChips[chipKey(platform)]) lastChips[chipKey(platform)] = { acc: [], tag: [] };
+  lastChips[chipKey(platform)].tag = (tags || []).slice();
+  box.innerHTML = '';
+  (tags || []).forEach(name => {
+    const chip = document.createElement('span');
+    chip.className = 'acc-chip';
+    chip.innerHTML = `#<b></b><button title="삭제">✕</button>`;
+    chip.querySelector('b').textContent = name;
+    chip.querySelector('button').onclick = () => editRemove(name);
+    box.appendChild(chip);
+  });
+}
+
+/* ========== 통합 랭킹 시스템 ========== */
+const RANK_UI = {
+  youtube: { grid: 'grid', status: 'status', count: 'rankYtCount', type: 'video', gridClass: 'grid' },
+  shorts:  { grid: 'grid', status: 'status', count: 'rankYtCount', type: 'video', gridClass: 'grid shorts' },
+  reels:   { grid: 'reelsGrid', status: 'reelsStatus', count: 'reelsCount', type: 'video', gridClass: 'grid shorts' },
+  tiktok:  { grid: 'ttGrid', status: 'ttStatus', count: 'ttCount', type: 'video', gridClass: 'grid shorts' },
+  x:       { grid: 'xList', status: 'xStatus', count: 'xCount', type: 'post' },
+  threads: { grid: 'thList', status: 'thStatus', count: 'thCount', type: 'post' },
+};
+
+const RANK_MGMT = {
+  youtube: { acc: 'ytAccSection', tag: 'ytTagSection', banner: 'rankYtBanner',
+             accChips: 'ytAccChips', tagChips: 'ytTagChips' },
+  shorts:  { acc: 'ytAccSection', tag: 'ytTagSection', banner: 'rankYtBanner',
+             accChips: 'ytAccChips', tagChips: 'ytTagChips' },
+  reels:   { acc: 'reelsAccSection', tag: 'reelsTagSection', banner: 'rankReelsBanner',
+             accChips: 'accChips', tagChips: 'reelsTagChips' },
+  tiktok:  { acc: 'ttAccSection', tag: 'ttTagSection', banner: 'rankTtBanner',
+             accChips: 'ttChips', tagChips: 'ttTagChips' },
+  x:       { acc: 'xAccSection', tag: 'xTagSection', banner: 'rankXBanner',
+             accChips: 'xChips', tagChips: 'xTagChips' },
+  threads: { acc: 'thAccSection', tag: null, banner: 'rankThBanner',
+             accChips: 'thChips', tagChips: null },
+};
+
+function updateOrderBtn() {
+  const btn = document.getElementById('orderToggleBtn');
+  if (btn) btn.textContent = rankState.order === 'asc' ? '▲ 오름차순' : '▼ 내림차순';
+}
+function updateRankUI() {
+  const p = state.tab;
+  if (p === 'ai') return;
+  const mgmt = RANK_MGMT[p];
+  if (!mgmt) return;
+
+  // Show/hide management sections based on scope
+  const accEl = mgmt.acc ? document.getElementById(mgmt.acc) : null;
+  if (accEl) accEl.style.display = rankState.scope === 'accounts' ? '' : 'none';
+  const tagEl = mgmt.tag ? document.getElementById(mgmt.tag) : null;
+  if (tagEl) tagEl.style.display = rankState.scope === 'tags' ? '' : 'none';
+
+  // Period selector for all ranking tabs
+  document.getElementById('periods').style.display = 'flex';
+
+  // Update sub-tab active state
+  document.querySelectorAll('#scopeTabs .subtab').forEach(b =>
+    b.classList.toggle('active', b.dataset.scope === rankState.scope));
+
+  // Rebuild sort menu for current tab
+  rebuildRankSortMenu();
+
+  // Update sort label
+  const sortLabel = SORT_LABELS[rankState.sort] || '조회수순';
+  const curlabel = document.querySelector('#rankSortMenu .curlabel');
+  if (curlabel) curlabel.textContent = sortLabel;
+
+  // Update limit
+  document.getElementById('limitSelect').value = rankState.limit;
+
+  // Hide threads fallback
+  const fb = document.getElementById('thFallback');
+  if (fb) fb.style.display = 'none';
+}
+
+async function loadRank(force = false) {
+  const platform = state.tab;
+  if (platform === 'ai') return;
+  const ui = RANK_UI[platform];
+  const mgmt = RANK_MGMT[platform];
+  if (!ui) return;
+  const seq = ++loadSeq;
+
+  // Clear previous banner
+  if (mgmt && mgmt.banner) document.getElementById(mgmt.banner).innerHTML = '';
+
+  // Show loading
+  const statusEl = document.getElementById(ui.status);
+  const gridEl = document.getElementById(ui.grid);
+  const countEl = document.getElementById(ui.count);
+  statusEl.style.display = 'block';
+  statusEl.textContent = '불러오는 중...';
+  gridEl.innerHTML = '';
+  if (countEl) countEl.textContent = '';
+
+  // Build query
+  const params = new URLSearchParams({
+    platform, scope: rankState.scope, sort: rankState.sort, limit: rankState.limit,
+    order: rankState.order
+  });
+  if (state.period) {
+    params.set('period', state.period);
+  }
+  if (force) params.set('force', '1');
+
+  try {
+    const res = await fetch('/api/rank?' + params);
+    const data = await res.json();
+    if (seq !== loadSeq) return;
+
+    // Update timestamp
+    if (data.fetchedAt) {
+      document.getElementById('updated').textContent =
+        '업데이트: ' + new Date(data.fetchedAt * 1000).toLocaleTimeString('ko-KR');
+    }
+
+    // Render errors banner
+    if (mgmt && mgmt.banner && data.errors && data.errors.length) {
+      const banner = document.getElementById(mgmt.banner);
+      banner.innerHTML = data.errors.map(e =>
+        `<div class="error-banner">⚠️ ${e.message || e.code}</div>`
+      ).join('');
+    }
+
+    // Support badge
+    if (data.support && data.support !== 'native' && mgmt && mgmt.banner) {
+      const banner = document.getElementById(mgmt.banner);
+      const cls = data.support === 'unsupported' ? 'support-badge unsupported' : 'support-badge';
+      banner.innerHTML += `<div class="${cls}">ℹ️ ${data.notice || data.support}</div>`;
+    }
+
+    // Unsupported → show badge only, no items
+    if (data.support === 'unsupported') {
+      statusEl.style.display = 'none';
+      return;
+    }
+
+    // Update account/tag chips from response
+    if (data.accountsOrTags && !editState.active) {
+      if (rankState.scope === 'accounts' && mgmt.accChips) {
+        renderAccChips(mgmt.accChips, platform, data.accountsOrTags);
+      } else if (rankState.scope === 'tags' && mgmt.tagChips) {
+        renderTagChips(mgmt.tagChips, platform, data.accountsOrTags);
+      }
+    }
+
+    // Empty results
+    if (!data.items || !data.items.length) {
+      statusEl.textContent = (rankState.scope !== 'all' && state.period && state.period !== 'month')
+        ? '이 기간에는 새 콘텐츠가 없어요. 기간을 "이번 달"로 넓혀보세요.'
+        : '결과가 없습니다.';
+      if (platform === 'threads' && rankState.scope === 'accounts' && data.accountsOrTags) {
+        showThreadsFallback(data.accountsOrTags);
+      }
+      return;
+    }
+
+    statusEl.style.display = 'none';
+
+    // Set grid class
+    if (ui.gridClass) gridEl.className = ui.gridClass;
+
+    // Render items
+    data.items.forEach((item, i) => {
+      const card = ui.type === 'post'
+        ? rankPostCard(item, i + 1, platform)
+        : rankVideoCard(item, i + 1, platform);
+      gridEl.appendChild(card);
+    });
+
+    // Count
+    const sortLabel = { likes: '좋아요', createdAt: '최신' }[rankState.sort] || '조회수';
+    if (countEl) countEl.textContent = `${sortLabel} 기준 · 총 ${data.items.length}개`;
+
+  } catch (e) {
+    if (seq !== loadSeq) return;
+    statusEl.textContent = '불러오기에 실패했습니다. 네트워크를 확인해 주세요.';
+  }
+}
+
+/* ---------- 랭킹 카드 렌더러 ---------- */
+function rankVideoCard(item, rank, platform) {
+  const el = document.createElement('div');
+  el.className = 'card';
+  const sf = rankState.sort;
+  const needProxy = platform === 'reels' || platform === 'tiktok';
+  const thumbSrc = needProxy && item.thumbnail
+    ? `/api/img?u=${encodeURIComponent(item.thumbnail)}`
+    : (item.thumbnail || '');
+  el.innerHTML = `
+    <div style="position:relative">
+      <img class="thumb" loading="lazy" src="${thumbSrc}" alt="">
+      <div class="rank${rank <= 3 ? ' top' : ''}">${rank}위</div>
+      ${item.extra && item.extra.length ? `<div class="len" style="bottom:8px">${item.extra.length}</div>` : ''}
+    </div>
+    <div class="meta">
+      <div class="title"></div>
+      <div class="sub">
+        <span class="${sf === 'views' ? 'views' : ''}">👁️ ${fmt2(item.views)}</span>
+        <span class="${sf === 'likes' ? 'views' : ''}">❤️ ${fmt2(item.likes)}</span>
+        ${item.comments ? `<span>💬 ${fmt2(item.comments)}</span>` : ''}
+      </div>
+      <div class="sub" style="margin-top:3px">
+        <span class="acct"></span>
+        <span class="pub"></span>
+      </div>
+    </div>`;
+  el.querySelector('.title').textContent = item.title || '';
+  const acctPrefix = item.account && item.account.startsWith('#') ? '' : '@';
+  el.querySelector('.acct').textContent = item.account ? acctPrefix + item.account : '';
+  if (item.extra && item.extra.published) el.querySelector('.pub').textContent = item.extra.published;
+  el.onclick = () => {
+    if (platform === 'youtube' || platform === 'shorts') openPlayer(item.id, platform === 'shorts');
+    else window.open(item.url, '_blank');
+  };
+  return el;
+}
+
+function rankPostCard(item, rank, platform) {
+  const el = document.createElement('div');
+  el.className = 'postcard';
+  const sf = rankState.sort;
+  const thumbSrc = item.thumbnail
+    ? `/api/img?u=${encodeURIComponent(item.thumbnail)}`
+    : '';
+  const rt = (item.extra && (item.extra.retweets || item.extra.reposts)) || 0;
+  el.innerHTML = `
+    <div class="phead">
+      <span class="prank${rank <= 3 ? ' top' : ''}">${rank}위</span>
+      <span class="pacct"></span>
+    </div>
+    <div class="ptext"></div>
+    ${thumbSrc ? `<img class="pmedia" loading="lazy" src="${thumbSrc}" alt="">` : ''}
+    <div class="pstats">
+      <span class="${sf === 'likes' ? 'hot' : ''}">❤️ <b>${fmt2(item.likes)}</b></span>
+      <span>💬 <b>${fmt2(item.comments)}</b></span>
+      ${rt ? `<span>🔁 <b>${fmt2(rt)}</b></span>` : ''}
+      ${item.views ? `<span class="${sf === 'views' ? 'hot' : ''}">👁️ <b>${fmt2(item.views)}</b></span>` : ''}
+    </div>`;
+  el.querySelector('.pacct').textContent = '@' + (item.account || '');
+  el.querySelector('.ptext').textContent = item.title || '';
+  el.onclick = () => window.open(item.url, '_blank');
+  return el;
+}
+
+/* ---------- 랭킹 툴바 초기화 ---------- */
+const SORT_LABELS = { views: '조회수순', likes: '좋아요순', createdAt: '최신순' };
+function rebuildRankSortMenu() {
+  const p = state.tab;
+  const opts = [];
+  if (p !== 'threads') opts.push({ key: 'views', label: '조회수순', icon: '👁️' });
+  opts.push({ key: 'likes', label: '좋아요순', icon: '❤️' });
+  if (['reels', 'x', 'threads', 'tiktok', 'youtube', 'shorts'].includes(p))
+    opts.push({ key: 'createdAt', label: '최신순', icon: '🕒' });
+  initFoldMenu('rankSortMenu', opts, rankState, () => loadRank());
+}
+function initRankToolbar() {
+  // Sub-tabs
+  document.getElementById('scopeTabs').onclick = async e => {
+    const btn = e.target.closest('.subtab');
+    if (!btn) return;
+    await commitEditIfActive();
+    rankState.scope = btn.dataset.scope;
+    state.search = '';
+    reelsTag = '';
+    ttSearch = '';
+    document.getElementById('searchInput').value = '';
+    const rti = document.getElementById('reelsTagInput');
+    if (rti) rti.value = '';
+    const tsi = document.getElementById('ttSearchInput');
+    if (tsi) tsi.value = '';
+    updateRankUI();
+    loadRank();
+  };
+
+  // Sort menu (탭별 동적 재구성)
+  rebuildRankSortMenu();
+
+  // Order toggle
+  document.getElementById('orderToggleBtn').onclick = () => {
+    rankState.order = rankState.order === 'desc' ? 'asc' : 'desc';
+    updateOrderBtn();
+    const isVideoTab = state.tab === 'youtube' || state.tab === 'shorts';
+    if (state.search && isVideoTab) {
+      loadVideos();
+    } else if (reelsTag && state.tab === 'reels') {
+      loadReels();
+    } else if (ttSearch && state.tab === 'tiktok') {
+      loadTikTok();
+    } else {
+      loadRank();
+    }
+  };
+
+  // Limit selector
+  document.getElementById('limitSelect').onchange = e => {
+    rankState.limit = parseInt(e.target.value);
+    loadRank();
+  };
+}
+
+/* ---------- 태그/계정 추가 이벤트 와이어링 ---------- */
+function wireRankMgmt() {
+  // YouTube/Shorts account
+  document.getElementById('ytAccAdd').onclick = () => {
+    const input = document.getElementById('ytAccInput');
+    const name = input.value.trim().replace(/^@/, '');
+    if (!name) return;
+    input.value = '';
+    editAdd(name);
+  };
+  document.getElementById('ytAccInput').addEventListener('keydown', e => {
+    if (e.key === 'Enter') document.getElementById('ytAccAdd').click();
+  });
+
+  // YouTube/Shorts tags
+  document.getElementById('ytTagAdd').onclick = () => {
+    const input = document.getElementById('ytTagInput');
+    const tag = input.value.trim().replace(/^#/, '');
+    if (!tag) return;
+    input.value = '';
+    editAdd(tag);
+  };
+  document.getElementById('ytTagInput').addEventListener('keydown', e => {
+    if (e.key === 'Enter') document.getElementById('ytTagAdd').click();
+  });
+
+  // Reels account (existing)
+  document.getElementById('accAdd').onclick = () => {
+    const input = document.getElementById('accInput');
+    const name = input.value.trim();
+    if (!name) return;
+    input.value = '';
+    editAdd(name);
+  };
+  document.getElementById('accInput').addEventListener('keydown', e => {
+    if (e.key === 'Enter') document.getElementById('accAdd').click();
+  });
+
+  // Reels tags
+  document.getElementById('reelsTagAddBtn').onclick = () => {
+    const input = document.getElementById('reelsTagAddInput');
+    const tag = input.value.trim().replace(/^#/, '');
+    if (!tag) return;
+    input.value = '';
+    editAdd(tag);
+  };
+  document.getElementById('reelsTagAddInput').addEventListener('keydown', e => {
+    if (e.key === 'Enter') document.getElementById('reelsTagAddBtn').click();
+  });
+
+  // X account (existing)
+  document.getElementById('xAdd').onclick = () => {
+    const input = document.getElementById('xInput');
+    const name = input.value.trim();
+    if (!name) return;
+    input.value = '';
+    editAdd(name);
+  };
+  document.getElementById('xInput').addEventListener('keydown', e => {
+    if (e.key === 'Enter') document.getElementById('xAdd').click();
+  });
+
+  // X tags
+  document.getElementById('xTagAddBtn').onclick = () => {
+    const input = document.getElementById('xTagInput');
+    const tag = input.value.trim().replace(/^#/, '');
+    if (!tag) return;
+    input.value = '';
+    editAdd(tag);
+  };
+  document.getElementById('xTagInput').addEventListener('keydown', e => {
+    if (e.key === 'Enter') document.getElementById('xTagAddBtn').click();
+  });
+
+  // Threads account (existing)
+  document.getElementById('thAdd').onclick = () => {
+    const input = document.getElementById('thInput');
+    const name = input.value.trim();
+    if (!name) return;
+    input.value = '';
+    editAdd(name);
+  };
+  document.getElementById('thInput').addEventListener('keydown', e => {
+    if (e.key === 'Enter') document.getElementById('thAdd').click();
+  });
+
+  // TikTok account (existing)
+  document.getElementById('ttAdd').onclick = () => {
+    const input = document.getElementById('ttInput');
+    const name = input.value.trim().replace(/^@/, '');
+    if (!name) return;
+    input.value = '';
+    editAdd(name);
+  };
+  document.getElementById('ttInput').addEventListener('keydown', e => {
+    if (e.key === 'Enter') document.getElementById('ttAdd').click();
+  });
+
+  // TikTok tags
+  document.getElementById('ttTagAddBtn').onclick = () => {
+    const input = document.getElementById('ttTagInput');
+    const tag = input.value.trim().replace(/^#/, '');
+    if (!tag) return;
+    input.value = '';
+    editAdd(tag);
+  };
+  document.getElementById('ttTagInput').addEventListener('keydown', e => {
+    if (e.key === 'Enter') document.getElementById('ttTagAddBtn').click();
+  });
+}
+
+/* ---------- 탭 전환 ---------- */
+document.getElementById('tabs').onclick = async e => {
+  const btn = e.target.closest('.tab');
+  if (!btn) return;
+  await commitEditIfActive();
+  state.tab = btn.dataset.tab;
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t === btn));
+
+  // Show toolbar for all except AI
+  document.getElementById('toolbar').style.display = state.tab === 'ai' ? 'none' : 'flex';
+
+  // Show/hide views
+  const isVideo = state.tab === 'youtube' || state.tab === 'shorts';
+  document.getElementById('videoView').style.display = isVideo ? 'block' : 'none';
+  document.getElementById('aiView').style.display = state.tab === 'ai' ? 'block' : 'none';
+  document.getElementById('reelsView').style.display = state.tab === 'reels' ? 'block' : 'none';
+  document.getElementById('xView').style.display = state.tab === 'x' ? 'block' : 'none';
+  document.getElementById('threadsView').style.display = state.tab === 'threads' ? 'block' : 'none';
+  document.getElementById('tiktokView').style.display = state.tab === 'tiktok' ? 'block' : 'none';
+
+  if (state.tab === 'ai') {
+    loadAI();
+  } else {
+    if (state.tab === 'threads' && rankState.sort === 'views') {
+      rankState.sort = 'likes';
+    }
+    if (state.tab === 'reels') loadIgSession();
+    updateRankUI();
+    // Use old endpoint for active searches
+    if (state.search && isVideo) {
+      loadVideos();
+    } else if (reelsTag && state.tab === 'reels') {
+      loadReels();
+    } else if (ttSearch && state.tab === 'tiktok') {
+      loadTikTok();
+    } else {
+      loadRank();
+    }
+  }
+};
+
+/* ---------- 기간 선택 ---------- */
+document.getElementById('periods').onclick = e => {
+  const btn = e.target.closest('.period');
+  if (!btn) return;
+  state.period = btn.dataset.period;
+  document.querySelectorAll('.period').forEach(p => p.classList.toggle('active', p === btn));
+  if (state.search) loadVideos();
+  else loadRank();
+};
+
+/* ---------- 검색 (유튜브 전용, 기존 엔드포인트 사용) ---------- */
+document.getElementById('searchForm').addEventListener('submit', e => {
+  e.preventDefault();
+  const kw = document.getElementById('searchInput').value.trim();
+  state.search = kw;
+  if (!kw) { loadRank(); return; }
+  // 검색은 유튜브/쇼츠 탭에서만
+  if (state.tab !== 'youtube' && state.tab !== 'shorts') {
+    state.tab = 'youtube';
+    document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === 'youtube'));
+    document.getElementById('toolbar').style.display = 'flex';
+    document.getElementById('videoView').style.display = 'block';
+    ['aiView','reelsView','xView','threadsView','tiktokView'].forEach(id =>
+      document.getElementById(id).style.display = 'none');
+    updateRankUI();
+  }
+  loadVideos();
+});
+
+/* ---------- 새로고침 ---------- */
+document.getElementById('refreshBtn').onclick = () => {
+  if (state.tab === 'ai') { loadAI(true); return; }
+  if (state.tab === 'reels') loadIgSession();
+  if (state.search && (state.tab === 'youtube' || state.tab === 'shorts')) {
+    loadVideos(true);
+  } else if (reelsTag && state.tab === 'reels') {
+    loadReels(true);
+  } else if (ttSearch && state.tab === 'tiktok') {
+    loadTikTok(true);
+  } else {
+    loadRank(true);
+  }
+};
+
+/* ---------- 초기화 ---------- */
+initRankToolbar();
+wireRankMgmt();
+updateRankUI();
+loadRank();
+</script>
+</body>
+</html>

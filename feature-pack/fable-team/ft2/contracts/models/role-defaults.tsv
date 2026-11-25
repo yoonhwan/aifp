@@ -1,0 +1,12 @@
+# ft 2.0 역할 기본값 — 역할 · 모델 · effort(pi --thinking 낱말) · 실행기(pi|codex) · fast(on|-)
+# 출처 = QA #280625(오빠 결정 2026-11-11) — 기본 세션 = claude-opus-5-5 / medium · 팀장 = claude-opus-5-5 / high
+# 출처 = r2198(오빠 결정 «나노 딥식» 2026-11-17) — keeper 가 여는 나노 = opengateway/deepseek/deepseek-v4.1-flash-ultrafast / medium
+# 출처 = r2446(오빠 답 A 2026-11-22 · Slack <ts>) — DA 기본 = gpt-6-astra / low(표 1.x runtime-policy.tsv «da» 행과 같은 모델)
+# 출처 = r2541(오빠 2026-11-23 17:12 «gpt 6.1 sol low fast» → «high도 과하다 low fast로 가자») — DA = codex gpt-6.1-sol / low / fast on(1.x runtime-policy.tsv «da»·«da@up» 행과 같은 값)
+# effort 낱말 = pi --thinking 7개(off · minimal · low · medium · high · xhigh · max) · 빈 칸·모르는 낱말 = 표 손상
+# 실행기 = pi|codex(지금 값 pi) · fast = on|- — «on» 은 codex 행에만 쓴다(«-» = fast 없음)
+# 표에 없는 역할 = 기본값 없음 — 다른 역할 행으로 조용히 대신하지 않는다
+session	claude-opus-5-5	medium	pi	-
+master	claude-opus-5-5	high	pi	-
+nano	opengateway/deepseek/deepseek-v4.1-flash-ultrafast	medium	pi	-
+da	gpt-6.1-sol	low	codex	on

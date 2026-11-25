@@ -1,0 +1,41 @@
+
+# baton 로컬 작업 상태 (워크트리·핸드오프·아카이브)
+.baton/
+.worktrees/
+
+# oh-my-claudecode 로컬 상태
+.omc/
+
+# 파이썬 바이트코드 (로컬 산물)
+**/__pycache__/
+
+# omo codegraph 인덱스 심링크 (로컬 전용)
+.codegraph
+
+# Claude Code 개인 로컬 설정
+.claude/settings.local.json
+
+# fable-team 파이프라인 로컬 상태 (세션 SSOT — 커밋 비대상)
+.fable-team/
+.gstack/
+
+# 인스타그램 세션 쿠키 (민감정보 — 로컬 전용, 커밋 금지)
+feature-pack/daily-trend-viewer/app/ig_session.json
+
+# 에이전트 런타임 로컬 상태 (커밋 비대상)
+.omo/
+.serena/
+**/.serena/
+
+# Command Code 로컬 상태 (taste 프로필·import 리포트 — 개인 세션에서 증류된 것이라 커밋 비대상.
+# 팀 공유가 필요하면 `cmd taste push -g` 로 글로벌 승격하거나 별도 패키지로 명시 관리한다)
+.commandcode/
+
+# tmuxc 세션 스냅샷 (로컬 전용 — 세션ID·프로젝트 경로·직전 작업 내용이 담기므로 커밋 금지).
+# 기본 경로는 ~/.tmuxc/snapshots 라 리포 밖이지만, TMUXC_SNAPSHOT_DIR 을 리포 안으로
+# 잡는 경우를 대비해 폴더를 통째로 막는다.
+.tmuxc/
+snapshots/
+
+# 워크트리마다 spawn·baton 이 쓰는 메타(추적 0 · 2026-11-16 harness#290 판단 aifp 5524)
+.worktree-info.json
